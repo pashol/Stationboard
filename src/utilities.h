@@ -25,6 +25,7 @@ void loadConfiguration();
 void saveConfiguration();
 void saveConfigCallback();
 void displayStatus(bool isSuccess);
+void switchStation();
 
 // Constants
 extern const char* DAYS[];

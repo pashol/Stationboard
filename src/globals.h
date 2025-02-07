@@ -11,12 +11,14 @@
 // Config parameters from the WIFIManager Setup
 struct Config {
     String stationId = "Luzern";
+    String stationId2 = "Zug";  // Second station
     int limit = 8;
     int offset = 0;
     int defaultBrightness = 4;
 };
 
 extern Config config;
+extern bool isFirstStation; // Track which station is currently displayed
 extern TFT_eSPI tft;
 extern WiFiManager wm;
 extern bool shouldSaveConfig;
@@ -70,6 +72,7 @@ void checkForConfigReset();
 void loadConfiguration();
 void saveConfiguration();
 void saveConfigCallback();
+void switchStation(); // New function to switch between stations
 
 #include <ArduinoJson.h>
 

@@ -27,12 +27,14 @@ void setupWiFiManager() {
     wm.setSaveConfigCallback(saveConfigCallback);
 
     // Add custom parameters for transport display settings
-    WiFiManagerParameter custom_station_id("station", "Station ID", String(config.stationId).c_str(), 150);
+    WiFiManagerParameter custom_station_id("station", "Station ID 1", String(config.stationId).c_str(), 150);
+    WiFiManagerParameter custom_station_id2("station2", "Station ID 2", String(config.stationId2).c_str(), 150);
     WiFiManagerParameter custom_limit("limit", "Number of Entries", String(config.limit).c_str(), 2);
     WiFiManagerParameter custom_offset("offset", "Time to station (min)", String(config.offset).c_str(), 2);
     WiFiManagerParameter custom_brightness("defaultBrightness", "Brightness level (0=off to 4=max)", String(config.defaultBrightness).c_str(), 1);
     
     wm.addParameter(&custom_station_id);
+    wm.addParameter(&custom_station_id2);
     wm.addParameter(&custom_limit);
     wm.addParameter(&custom_offset);
     wm.addParameter(&custom_brightness);
@@ -66,6 +68,7 @@ void setupWiFiManager() {
 
     // Read updated parameters
     config.stationId = custom_station_id.getValue();
+    config.stationId2 = custom_station_id2.getValue();
     config.limit = String(custom_limit.getValue()).toInt();
     config.offset = String(custom_offset.getValue()).toInt();
     config.defaultBrightness = String(custom_brightness.getValue()).toInt();

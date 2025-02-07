@@ -27,6 +27,7 @@ void setup() {
 
     // Set up button callbacks
     button.attachClick(cycleBrightness);
+    button.attachDoubleClick(switchStation);
     button.setPressMs(10000); // 10 seconds for long press
     button.attachLongPressStart(handleLongPress);
 

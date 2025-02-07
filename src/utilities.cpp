@@ -1,5 +1,6 @@
 #include "utilities.h"
 #include "globals.h"
+#include "stationboard.h"
 #include <FS.h>
 #include <SPIFFS.h>
 #include <ArduinoJson.h>
@@ -169,6 +170,7 @@ void loadConfiguration() {
             
             if (!error) {
                 config.stationId = doc["station_id"].as<String>();
+                config.stationId2 = doc["station_id2"].as<String>();
                 config.limit = doc["limit"].as<int>();
                 config.offset = doc["offset"].as<int>();
                 config.defaultBrightness = doc["defaultBrightness"].as<int>();
@@ -183,6 +185,7 @@ void loadConfiguration() {
 void saveConfiguration() {
     DynamicJsonDocument doc(1024);
     doc["station_id"] = config.stationId;
+    doc["station_id2"] = config.stationId2;
     doc["limit"] = config.limit;
     doc["offset"] = config.offset;
     doc["defaultBrightness"] = config.defaultBrightness;
@@ -219,6 +222,12 @@ void saveConfiguration() {
 void saveConfigCallback() {
     Serial.println("Should save config");
     shouldSaveConfig = true;
+}
+
+void switchStation() {
+    isFirstStation = !isFirstStation;
+    Serial.println(isFirstStation ? "Switched to first station" : "Switched to second station");
+    drawStationboard(); // Redraw the stationboard with the new station, force refresh
 }
 
 void displayStatus(bool isSuccess) {

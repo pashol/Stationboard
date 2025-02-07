@@ -22,6 +22,7 @@ void TransportListener::whitespace(char c) {
 void TransportListener::startDocument() {   
     Serial.println("Start parsing");
     transports.clear();
+    station = "";
     inStationboard = false;
     currentPath = "";
     currentKey = "";
@@ -201,11 +202,14 @@ void drawStation(const String& station) {
 
 void drawStationboard() {
     static TransportListener listener;
+    static String lastStationId;
     HTTPClient http;
     http.setConnectTimeout(HTTP_TIMEOUT);
     
+    String currentStationId = isFirstStation ? config.stationId : config.stationId2;
+    
     String url = "http://transport.opendata.ch/v1/stationboard?id=" + 
-                 URLEncode(config.stationId) + "&limit=" + URLEncode(String(config.limit)) +"&datetime=" + URLEncode(getFormattedTimeRelativeToNow(config.offset));
+                    URLEncode(currentStationId) + "&limit=" + URLEncode(String(config.limit)) +"&datetime=" + URLEncode(getFormattedTimeRelativeToNow(config.offset));
 
     Serial.println("Relative Time: " + getFormattedTimeRelativeToNow(config.offset));
     Serial.print("URL: ");
@@ -233,6 +237,8 @@ void drawStationboard() {
         parser.reset(); // Ensure parser is empty
         drawStation(listener.getStation());
         displayTransports(listener.getTransports());
+
     }
     http.end();
+
 }
