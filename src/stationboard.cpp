@@ -167,6 +167,11 @@ void drawTransport(TFT_eSprite& sprite, const Transport& transport, int yPos) {
 }
 
 void displayTransports(const std::vector<Transport>& transports) {
+    // Filter out null transports
+    std::vector<Transport> validTransports;
+    std::copy_if(transports.begin(), transports.end(), std::back_inserter(validTransports),
+        [](const Transport& t) { return t.name != "null"; });
+
     TFT_eSprite sprite(&tft);
     sprite.setColorDepth(8);
     sprite.createSprite(tft.width(), 5 * POS_INC);
@@ -174,15 +179,15 @@ void displayTransports(const std::vector<Transport>& transports) {
 
     // Draw first half (0-4)
     sprite.fillSprite(TFT_BLUE);
-    for (size_t i = 0; i < std::min(size_t(5), transports.size()); i++) {
-        drawTransport(sprite, transports[i], i * POS_INC);
+    for (size_t i = 0; i < std::min(size_t(5), validTransports.size()); i++) {
+        drawTransport(sprite, validTransports[i], i * POS_INC);
     }
     sprite.pushSprite(0, POS_FIRST);
 
     // Draw second half (5-9)
     sprite.fillSprite(TFT_BLUE);
-    for (size_t i = 5; i < transports.size(); i++) {
-        drawTransport(sprite, transports[i], (i-5) * POS_INC);
+    for (size_t i = 5; i < validTransports.size(); i++) {
+        drawTransport(sprite, validTransports[i], (i-5) * POS_INC);
     }
     sprite.pushSprite(0, POS_FIRST + (5 * POS_INC));
 }
