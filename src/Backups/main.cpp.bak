@@ -1,0 +1,277 @@
+#include <Arduino.h>
+#include <ArduinoJson.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <SPI.h>
+#include "TFT_eSPI.h"
+#include <WiFiUdp.h>
+#include <NTPClient.h>
+#include <FS.h> // Font files are stored in Flash FS
+
+
+#define AA_FONT_SMALL "NotoSansBold15"
+#define AA_FONT_LARGE "NotoSansBold36"
+#define STATION "Ehret"
+#define LIMIT 1
+#define POS_TIME 3
+#define POS_BUS  80
+#define POS_TO   130
+#define POS_INC  18
+#define POS_FIRST 30
+int newLine = POS_FIRST;
+
+const char* ssid = "Fortuna";
+const char* password = "Allrueti136343Rotkreuz";
+// const char* url = "http://transport.opendata.ch/v1/stationboard?id=8577582&limit=2";
+String base_url = "http://transport.opendata.ch/v1/stationboard?id=";
+String url_limit = "&limit=";
+String url = "http://transport.opendata.ch/v1/stationboard?id=8577582&limit=2"; //Fallback
+
+// Größe des JSON-Dokuments berechnen
+
+const size_t JSON_BUFFER_SIZE = 3000000;  // Streaming buffer size
+const size_t filterCapacity = 
+    JSON_OBJECT_SIZE(1) +    // Root object
+    JSON_ARRAY_SIZE(LIMIT) + // Stationboard array mit 1 Element
+    2*JSON_OBJECT_SIZE(1) +  // stop und prognosis objects
+    5;                       // Für die true values
+
+
+TFT_eSPI tft = TFT_eSPI();
+//TFT_eSprite buffer = TFT_eSprite(&tft);
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP);
+
+// Hilfsfunktion: Berechnet die Verspätung
+int calculateDelay(const char* scheduled, const char* prognosis) {
+  // Wenn keine Zeiten verfügbar, keine Verspätung
+  if (!scheduled || !prognosis) return 0;
+  
+  // Extrahiere Stunden und Minuten
+  int schHour = atoi(scheduled + 11);
+  int schMin = atoi(scheduled + 14);
+  int progHour = atoi(prognosis + 11);
+  int progMin = atoi(prognosis + 14);
+  
+  // Berechne Gesamtminuten
+  int scheduledMinutes = schHour * 60 + schMin;
+  int prognosisMinutes = progHour * 60 + progMin;
+  
+  // Behandle Mitternachtsübergang
+  if (prognosisMinutes < scheduledMinutes - 720) {
+    prognosisMinutes += 24 * 60;
+  }
+  
+  return prognosisMinutes - scheduledMinutes;
+}
+
+// Hilfsfunktion: Display Header zeichnen
+void drawHeader() {
+    tft.loadFont(AA_FONT_SMALL);
+    tft.fillScreen(TFT_BLUE);
+    tft.setTextColor(TFT_BLACK, TFT_WHITE);
+    tft.fillRect(0, 0, tft.width(), 25, TFT_WHITE);
+    tft.setCursor(POS_BUS, 7);
+    tft.print("Bus");
+    tft.setCursor(POS_TO, 7);
+    tft.print("Nach");
+    tft.setTextColor(TFT_WHITE, TFT_BLUE);
+}
+
+// Hilfsfunktion: Aktuelle Zeit anzeigen
+void drawCurrentTime() {
+    timeClient.update();
+    tft.loadFont(AA_FONT_SMALL);
+    tft.setTextColor(TFT_BLACK, TFT_WHITE);
+    tft.fillRect(0, tft.height() - 25, tft.width(), 25, TFT_WHITE);
+    tft.setCursor(4, tft.height() - 20);
+    tft.print("Zeit: ");
+    tft.print(timeClient.getFormattedTime());
+}
+
+// Hilfsfunktion: Einen Transporteintrag anzeigen
+void displayEntry(const char* departure, int delay, const char* category, 
+                 const char* number, const char* to) {
+    // Zeit anzeigen
+    tft.setCursor(POS_TIME, newLine);
+    tft.printf("%.*s", 5, departure + 11);  // HH:MM aus Zeitstempel
+    
+    // Verspätung anzeigen wenn vorhanden
+    if (delay > 0) {
+        tft.setTextColor(TFT_RED, TFT_BLUE);
+        tft.printf(" +%d", delay);
+        tft.setTextColor(TFT_WHITE,TFT_BLUE);
+    }
+    
+    // Bus-Nummer und Kategorie
+    tft.setCursor(POS_BUS, newLine);
+    tft.printf("%-1s%-3s", category, number);
+    
+    // Zielort
+    tft.setCursor(POS_TO, newLine);
+    tft.printf("%-20s", to);
+    
+    // Zeilenposition aktualisieren
+    newLine += POS_INC;
+    
+    // Debug-Ausgabe
+    Serial.printf("Bus %s%s nach %s: %.*s (Verspätung: %d min)\n",
+                 category, number, to, 5, departure + 11, delay);
+}
+
+
+void setup() {
+  Serial.begin(115200);
+
+  // PSRAM überprüfen
+  if (psramInit()) {
+      Serial.println("PSRAM initialized");
+      Serial.printf("Total PSRAM: %d bytes\n", ESP.getPsramSize());
+      Serial.printf("Free PSRAM: %d bytes\n", ESP.getFreePsram());
+  } else {
+      Serial.println("PSRAM not available");
+  }
+
+  tft.begin();
+  tft.setRotation(1);
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextColor(TFT_WHITE);
+  tft.setTextSize(1);
+  //buffer.createSprite(tft.width(), tft.height());
+
+  WiFi.begin(ssid, password);
+  
+  url = base_url + STATION + url_limit + LIMIT;
+
+  timeClient.begin();
+  timeClient.setTimeOffset(3600); // Set the time zone offset (in seconds)
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.println("Connecting to WiFi...");
+    tft.drawString("Connecting to WiFi...", 20, 100);
+  }
+  
+  Serial.println("Connected to WiFi");
+  tft.fillScreen(TFT_BLACK);
+  tft.drawString("Connected to WiFi", 20, 100);
+  delay(2000);
+
+  if (!SPIFFS.begin()) {
+    Serial.println("SPIFFS initialisation failed!");
+    while (1) yield(); // Stay here twiddling thumbs waiting
+  }
+  Serial.println("\r\nSPIFFS available!");
+  
+  // ESP32 will crash if any of the fonts are missing
+  bool font_missing = false;
+  if (SPIFFS.exists("/NotoSansBold15.vlw")    == false) font_missing = true;
+  if (SPIFFS.exists("/NotoSansBold36.vlw")    == false) font_missing = true;
+
+  if (font_missing)
+  {
+    Serial.println("\r\nFont missing in SPIFFS, did you upload it?");
+    while(1) yield();
+  }
+  else Serial.println("\r\nFonts found OK.");
+
+
+
+}
+
+void loop() {
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    Serial.print("URL: ");
+    Serial.println(url);
+    http.begin(url);
+
+    int httpResponseCode = http.GET();
+    Serial.print("HTTPCODE: ");
+    Serial.println(httpResponseCode);
+
+    drawHeader();
+
+    if (httpResponseCode == HTTP_CODE_OK) {
+      
+      // Prepare JSON document
+      StaticJsonDocument<filterCapacity> doc;
+      
+      // Create filter
+      StaticJsonDocument<200> filter;
+      filter["stationboard"][0]["stop"]["departure"] = true;
+      filter["stationboard"][0]["stop"]["prognosis"]["departure"] = true;
+      filter["stationboard"][0]["number"] = true;
+      filter["stationboard"][0]["category"] = true;
+      filter["stationboard"][0]["to"] = true;
+      
+      // JSON Dokument vorbereiten
+      // DynamicJsonDocument doc(JSON_BUFFER_SIZE);
+
+      // Stream für JSON-Parsing
+      WiFiClient& stream = http.getStream();
+
+      // Try to parse JSON with detailed error reporting
+      DeserializationError error = deserializeJson(doc, stream, 
+                                                  DeserializationOption::Filter(filter));      
+
+      if (error) {
+        Serial.print("JSON parsing failed: ");
+        Serial.println(error.c_str());
+      } else {
+        // Stationboard
+        tft.setCursor(0,30);
+        tft.setTextColor(TFT_WHITE, TFT_BLUE);
+
+        // Stationboard verarbeiten
+        JsonArray stationboard = doc["stationboard"];
+
+        for (JsonObject item : stationboard) {
+
+          // Hole Zeitstempel
+          const char* departure = item["stop"]["departure"];
+          const char* prognosis = item["stop"]["prognosis"]["departure"] | departure;
+          
+          // Berechne Verspätung
+          int delay = calculateDelay(departure, prognosis);
+          
+          // Parse Zeiten
+          int departureHour = atoi(departure + 11);
+          int departureMinute = atoi(departure + 14);
+          
+          // Hole weitere Daten
+          const char* number = item["number"];
+          const char* category = item["category"];
+          const char* to = item["to"];
+
+          // Zeige Abfahrt an
+          displayEntry(departure, delay, category, number, to);
+        
+        }
+        
+        // Speicher freigeben
+        doc.clear();
+
+      }
+    } else {
+      Serial.print("HTTP request failed, error code: ");
+      Serial.println(httpResponseCode);
+    }
+   
+    http.end();
+
+    // Aktuelle Zeit anzeigen
+    drawCurrentTime();
+  }
+
+  // Push the buffer to the screen
+  //buffer.pushSprite(0, 0);
+  newLine = POS_FIRST;
+  Serial.println("============ End of Request ====================");
+  delay(60000); // Wait for 60 seconds before making the next request
+}
+
+
+
+
+

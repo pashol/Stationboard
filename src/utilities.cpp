@@ -1,0 +1,231 @@
+#include "utilities.h"
+#include "globals.h"
+#include <FS.h>
+#include <SPIFFS.h>
+#include <ArduinoJson.h>
+#include <WiFiManager.h>
+
+void checkForConfigReset() {
+    // Initialize trigger pin as input with pullup
+    pinMode(TRIGGER_PIN, INPUT_PULLUP);
+    
+    // Allow the device to boot properly
+    delay(1000);
+    
+    // Display instruction
+    tft.fillScreen(TFT_BLACK);
+    tft.loadFont(AA_FONT_SMALL);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.drawString("Press BOOT to reset", 20, 80);
+    tft.drawString("Waiting 3 seconds...", 20, 100);
+    
+    // Check for button press after boot
+    unsigned long startTime = millis();
+    while (millis() - startTime < 3000) {  // Wait 3 seconds for button press
+        if (digitalRead(TRIGGER_PIN) == LOW) {
+            delay(50);  // Simple debounce
+            if (digitalRead(TRIGGER_PIN) == LOW) {  // Double check
+                Serial.println("Reset button pressed - clearing WiFi settings");
+                
+                tft.fillScreen(TFT_BLACK);
+                tft.drawString("Clearing settings...", 20, 60);
+                
+                // Create WiFiManager instance
+                WiFiManager wm;
+                
+                // Reset settings
+                wm.resetSettings();
+                // Then try to mount and clear SPIFFS if possible
+                if (SPIFFS.begin(true)) {  // Mount SPIFFS with formatting on failure
+                    if (SPIFFS.exists("/config.json")) {
+                        SPIFFS.remove("/config.json");
+                        Serial.println("Config found and deleted");
+                    }
+                    SPIFFS.end();  // Clean unmount
+                }
+                tft.drawString("Settings cleared!", 20, 80);
+                tft.drawString("To configure:", 20, 120);
+                tft.drawString("Connect to Wifi TransportDisplay_AP", 20, 140);
+                delay(2000);
+                
+                ESP.restart();
+            }
+        }
+        delay(10);
+    }
+}
+
+String URLEncode(String msg) {
+    const char *hex = "0123456789ABCDEF";
+    String encodedMsg = "";
+    
+    for (char c : msg) {
+        if (isAlphaNumeric(c) || c == '-' || c == '_' 
+            || c == '.' || c == '~') {
+            encodedMsg += c;
+        } else {
+            encodedMsg += '%';
+            encodedMsg += hex[c >> 4];
+            encodedMsg += hex[c & 0xF];
+        }
+    }
+    return encodedMsg;
+}
+
+String getTimeWithoutSeconds() {
+    String hourStr = String(timeClient.getHours());
+    if (hourStr.length() < 2) hourStr = "0" + hourStr;
+    
+    String minuteStr = String(timeClient.getMinutes());
+    if (minuteStr.length() < 2) minuteStr = "0" + minuteStr;
+    
+    return hourStr + ":" + minuteStr;
+}
+
+String getFormattedDateTime() {
+    time_t epochTime = timeClient.getEpochTime();
+    struct tm *ptm = gmtime ((time_t *)&epochTime);
+    
+    String dateTime = getTimeWithoutSeconds();
+    dateTime += " - ";
+    dateTime += String(ptm->tm_mday);
+    dateTime += ". ";
+    dateTime += MONTHS[ptm->tm_mon];
+
+    // Add year
+    dateTime += " ";
+    dateTime += String(ptm->tm_year + 1900);
+    
+    return dateTime;
+}
+
+String getDayOfWeek() {
+    return DAYS[timeClient.getDay()];
+}
+
+void drawCurrentTime() {
+    timeClient.update();
+    
+    // Create temporary sprite for time display
+    TFT_eSprite timeSprite(&tft);
+    timeSprite.setColorDepth(8);
+    timeSprite.createSprite(tft.width() / 2, 25);
+    timeSprite.loadFont(AA_FONT_SMALL);
+    
+    // Clear sprite and set background
+    timeSprite.fillSprite(TFT_WHITE);
+    
+    // Draw time and date
+    timeSprite.setTextColor(TFT_BLACK, TFT_WHITE);
+    timeSprite.drawString(getFormattedDateTime(), 4, 5);
+    
+    // Push to bottom of screen
+    timeSprite.pushSprite(0, tft.height() - 25);
+}
+
+String getFormattedTimeRelativeToNow(int minutesOffset) {
+    time_t epochTime = timeClient.getEpochTime() + (minutesOffset * 60);
+    struct tm *ptm = gmtime((time_t *)&epochTime);
+
+    char buffer[20];
+    snprintf(buffer, sizeof(buffer), "%04d-%02d-%02d %02d:%02d",
+             ptm->tm_year + 1900, 
+             ptm->tm_mon + 1, 
+             ptm->tm_mday,
+             ptm->tm_hour, 
+             ptm->tm_min);
+    return String(buffer);
+}
+
+void updateBrightness() {
+    // Set backlight brightness using LED PWM channel
+    ledcWrite(PWM_CHANNEL, BRIGHTNESS_LEVELS[currentBrightnessIndex]);
+    
+    // For debugging, output current level to serial (can also use display)
+    Serial.printf("Brightness level: %d\n", BRIGHTNESS_LEVELS[currentBrightnessIndex]);
+}
+
+void cycleBrightness() {
+    // Normal brightness cycling
+    currentBrightnessIndex = (currentBrightnessIndex + 1) % NUM_LEVELS;
+    updateBrightness();
+}
+
+void debugInfo() {
+    // Debug info (no WiFi needed)
+    Serial.printf("Free heap: %d bytes\n", ESP.getFreeHeap());
+    Serial.printf("Largest block: %d bytes\n", ESP.getMaxAllocHeap());
+    UBaseType_t watermark = uxTaskGetStackHighWaterMark(NULL);
+    Serial.printf("Stack watermark: %d bytes\n", watermark);
+    Serial.println("============ End of refresh cycle ==================");
+}
+
+void loadConfiguration() {
+    if (SPIFFS.exists("/config.json")) {
+        File configFile = SPIFFS.open("/config.json", FILE_READ);
+        if (configFile) {
+            DynamicJsonDocument doc(1024);
+            DeserializationError error = deserializeJson(doc, configFile);
+            
+            if (!error) {
+                config.stationId = doc["station_id"].as<String>();
+                config.limit = doc["limit"].as<int>();
+                config.offset = doc["offset"].as<int>();
+                config.defaultBrightness = doc["defaultBrightness"].as<int>();
+            }
+            configFile.close();
+        } else {
+            Serial.println("No config found");
+        }
+    }
+}
+
+void saveConfiguration() {
+    DynamicJsonDocument doc(1024);
+    doc["station_id"] = config.stationId;
+    doc["limit"] = config.limit;
+    doc["offset"] = config.offset;
+    doc["defaultBrightness"] = config.defaultBrightness;
+
+    File configFile = SPIFFS.open("/config.json", FILE_WRITE);
+    if (!configFile) {
+        Serial.println("- failed to open file for writing");
+        return;
+    }
+
+    serializeJson(doc, Serial);
+    serializeJson(doc, configFile);
+    configFile.close();
+    
+    // Verify the write
+    configFile = SPIFFS.open("/config.json");
+    if (!configFile) {
+        Serial.println("- failed to open file for verification");
+        return;
+    }
+    
+    if (configFile.size() > 0) {
+        Serial.println("- config file verified");
+        Serial.println("Contents:");
+        while(configFile.available()) {
+            Serial.write(configFile.read());
+        }
+    } else {
+        Serial.println("- config file appears empty");
+    }
+    configFile.close();
+}
+
+void saveConfigCallback() {
+    Serial.println("Should save config");
+    shouldSaveConfig = true;
+}
+
+void displayStatus(bool isSuccess) {
+    // Clear the status area with white background
+    tft.fillRect(tft.width() - 25, tft.height() - 25, 25, 25, TFT_WHITE);
+    
+    // Draw the circle in green or red based on status
+    tft.fillCircle(tft.width() - 13, tft.height() - 13, 3, 
+                   isSuccess ? TFT_GREEN : TFT_RED);
+}

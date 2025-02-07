@@ -1,0 +1,929 @@
+#include <FS.h>
+#include <WiFiManager.h>          //https://github.com/tzapu/WiFiManager WiFi Configuration Magic
+#include <SPIFFS.h>
+#include <ArduinoJson.h>
+#include <Arduino.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <WiFiUdp.h>
+#include <NTPClient.h>
+#include <JsonListener.h>
+#include <JsonStreamingParser.h>
+#include "NotoSansBold15.h"
+#include <ElegantOTA.h>
+#include <WebServer.h>
+
+/* You only need to format SPIFFS the first time you run a
+   test or else use the SPIFFS plugin to create a partition
+   https://github.com/me-no-dev/arduino-esp32fs-plugin */
+#define FORMAT_SPIFFS_IF_FAILED true
+
+#define AA_FONT_SMALL NotoSansBold15
+
+#include <SPI.h>
+#include "TFT_eSPI.h"
+#include <OneButton.h>
+
+// Config parameters from the WIFIManager Setup
+struct Config {
+    String stationId = "8577582";  // Default values
+    int limit = 8;
+    int offset = 0;
+    int defaultBrightness = 4;
+};
+
+// Position of entries on screen
+#define POS_TIME 53 //3 
+#define POS_DELAY 97 //47 (diff 44)
+#define POS_BUS  3 //80 (diff 33)
+#define POS_TO   130 //130 (diff 50)
+#define POS_INC  18 //18 
+#define POS_FIRST 32 //30
+// Define the boot button pin - ESP32 built-in button
+#define TRIGGER_PIN 0    // GPIO0 is the BOOT button on most ESP32 boards
+
+int bitcoin_price = 0;
+bool shouldSaveConfig = false;
+
+// URL Base-Settings
+#define getBTCAPI "https://api.coinbase.com/v2/prices/BTC-USD/spot"
+
+// Loop refresh cycle
+unsigned long previousMillis = 0;
+const unsigned long UPDATE_INTERVAL = 60000; // Update every 60 seconds
+
+// Define days of the week and months arrays
+const char* DAYS[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+const char* MONTHS[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+const long timeOffset = 3600; // UTC+1
+
+// HTTP Settings
+const unsigned long HTTP_TIMEOUT = 10000;
+const int MAX_RETRIES = 3;
+const unsigned long RETRY_DELAY = 1000;
+
+// Button setup (change pin number as needed)
+const int BUTTON_PIN = 0;  // Usually GPIO0 for ESP32-2432S028R
+OneButton button(BUTTON_PIN, true);  // true = button is active LOW
+
+// Brightness levels
+const int BRIGHTNESS_LEVELS[] = {0, 64 ,128, 192, 255};  // Off --> Full
+const int NUM_LEVELS = sizeof(BRIGHTNESS_LEVELS) / sizeof(BRIGHTNESS_LEVELS[0]);
+int currentBrightnessIndex = 3;  // Start at full brightness
+
+// PWM configuration for backlight
+const int PWM_CHANNEL = 0;
+const int PWM_FREQ = 5000;
+const int PWM_RESOLUTION = 8;
+const int BACKLIGHT_PIN = TFT_BL;  // GPIO21 for ESP32-2432S028R backlight
+
+// Time management
+// const int onHour = 23;  // 11 PM
+// const int offHour = 6;    // 6 AM
+unsigned long temporaryOnStart = 0;
+const unsigned long TEMP_ON_DURATION = 300000;  // 5 minutes in milliseconds
+
+// OTA Mode
+int ota_progress_millis = 0;
+WebServer server(80);
+bool otaMode = false;
+
+// Create WiFiManager instance
+WiFiManager wm;
+
+TFT_eSPI tft = TFT_eSPI();
+
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "pool.ntp.org", timeOffset);
+Config config;
+
+struct Transport {
+    String name;
+    String number;
+    String operatorName;
+    String destination;
+    String departure;
+    String delay;
+    String category;
+};
+
+class TransportListener: public JsonListener {
+private:
+    String currentKey;
+    String currentPath;
+    String station;
+    bool inStationboard = false;
+    bool inStop = false;
+
+
+    std::vector<Transport> transports;
+    Transport currentTransport;
+
+    void resetTransport() {
+        currentTransport.name = "";
+        currentTransport.number = "";
+        currentTransport.operatorName = "";
+        currentTransport.destination = "";
+        currentTransport.departure = "";
+        currentTransport.delay = "";
+        currentTransport.category = "";
+    }
+
+    String extractTime(const String& isoTime) {
+        if (isoTime.length() >= 16) {
+            return isoTime.substring(11, 16); // Extract HH:MM
+        }
+        return "";
+    }
+
+public:
+    TransportListener() {}
+
+    const std::vector<Transport>& getTransports() const {
+        return transports;
+    }
+
+    String getStation() const {
+        return station;
+    }
+
+    virtual void whitespace(char c) {
+        // Ignore whitespace characters
+    }
+
+    void startDocument() {   
+        //display.fillRect(0,25,display.width(), display.height() - 50, TFT_BLUE);
+
+        // Draw header line
+        Serial.println("Start parsing");
+        transports.clear();
+        inStationboard = false;
+        currentPath = "";
+        currentKey = "";
+        inStop = false;
+    }
+
+    void key(String key) {
+        currentKey = key;
+        
+        // Update the path based on where we are
+        if (inStationboard) {
+            if (inStop) {
+                currentPath = "stationboard/stop/" + key;
+            } else {
+                currentPath = "stationboard/" + key;
+            }
+        }
+        
+        //Serial.print("Current path: ");
+        //Serial.println(currentPath);
+    }
+
+    void value(String value) {
+        String fullPath = currentPath + "/" + currentKey;
+        // Serial.print("Value at path ");
+        // Serial.print(fullPath);
+        // Serial.print(": ");
+        // Serial.println(value);
+        // If required to filter for NULL values, then value == "null"
+
+
+        if (station.isEmpty()){
+            if (fullPath == "/station/name") {
+                station = value;
+                Serial.print("Found station: ");
+                Serial.println(value);
+            }
+        }
+
+        // Process only the paths we need
+        if (fullPath.endsWith("/stop/departure")) {
+            currentTransport.departure = extractTime(value);
+            // Serial.print("Found departure: ");
+            // Serial.println(extractTime(value));
+        }
+        else if (fullPath.endsWith("/stop/delay")) {
+            currentTransport.delay = value;
+            // Serial.print("Found delay: ");
+            // Serial.println(value);
+        }
+        else if (fullPath.endsWith("/name")) {
+            //Serial.print("Found name: ");
+            // Serial.println(value);
+            // Serial.println(fullPath + ": " + value);
+            currentTransport.name = value;
+        }
+        else if (fullPath.endsWith("/category")) {
+            // Serial.print("Found category: ");
+            // Serial.println(value);
+            currentTransport.category = value;
+        }
+        else if (fullPath.endsWith("/number")) {
+            // Serial.print("Found number: ");
+            // Serial.println(currentTransport.number);
+            if (value != "null") {
+                // making sure, number stays below 1000, since only 999, like B606 for busses.
+                int numValue = value.toInt();
+                currentTransport.number = (numValue < 1000) ? String(numValue) : "";
+            }
+        }
+        else if (fullPath.endsWith("/to")) {
+            // Serial.print("Found to: ");
+            // Serial.println(value);
+            if (value.length() > 25) {
+                value = value.substring(0, 22) + "...";
+            }
+            currentTransport.destination = value;
+            transports.push_back(currentTransport);
+            resetTransport();
+        }
+    }
+
+    void endArray() {
+        // Remove the last path segment
+        int lastSlash = currentPath.lastIndexOf('/');
+        if (lastSlash >= 0) {
+            currentPath = currentPath.substring(0, lastSlash);
+        }
+        
+        // Serial.print("End array, new path: ");
+        // Serial.println(currentPath);
+    }
+
+    void startArray() {
+        if (currentKey.length() > 0) {
+            currentPath += "/" + currentKey;
+        }
+        // Serial.print("Start array at path: ");
+        // Serial.println(currentPath);
+    }
+
+    void startObject() {
+        if (currentKey.length() > 0) {
+            currentPath += "/" + currentKey;
+        }
+        // Serial.print("Start object at path: ");
+        // Serial.println(currentPath);
+    }
+
+    void endObject() {
+        // Remove the last path segment
+        int lastSlash = currentPath.lastIndexOf('/');
+        if (lastSlash >= 0) {
+            currentPath = currentPath.substring(0, lastSlash);
+        }
+        
+        // Serial.print("End object, new path: ");
+        // Serial.println(currentPath);
+    }
+
+    void endDocument() {
+        Serial.println("Ende JSON");
+        Serial.println("----------------------------");
+    }
+
+private:
+
+
+};
+
+String URLEncode(String msg) {
+    const char *hex = "0123456789ABCDEF";
+    String encodedMsg = "";
+    
+    for (char c : msg) {
+        if (isAlphaNumeric(c) || c == '-' || c == '_' 
+            || c == '.' || c == '~') {
+            encodedMsg += c;
+        } else {
+            encodedMsg += '%';
+            encodedMsg += hex[c >> 4];
+            encodedMsg += hex[c & 0xF];
+        }
+    }
+    return encodedMsg;
+}
+
+// Function to get time without seconds
+String getTimeWithoutSeconds() {
+    String hourStr = String(timeClient.getHours());
+    if (hourStr.length() < 2) hourStr = "0" + hourStr;
+    
+    String minuteStr = String(timeClient.getMinutes());
+    if (minuteStr.length() < 2) minuteStr = "0" + minuteStr;
+    
+    return hourStr + ":" + minuteStr;
+}
+
+// Function to get formatted date with time first
+String getFormattedDateTime() {
+    time_t epochTime = timeClient.getEpochTime();
+    struct tm *ptm = gmtime ((time_t *)&epochTime);
+    
+    String dateTime = getTimeWithoutSeconds();
+    dateTime += " - ";
+    dateTime += String(ptm->tm_mday);
+    dateTime += ". ";
+    dateTime += MONTHS[ptm->tm_mon];
+
+    // Add year
+    dateTime += " ";
+    dateTime += String(ptm->tm_year + 1900);
+    
+    return dateTime;
+}
+
+// Function to get day of week
+String getDayOfWeek() {
+    return DAYS[timeClient.getDay()];
+}
+
+void drawTransport(TFT_eSprite& sprite, const Transport& transport, int yPos) {
+
+    const char* LONG_DISTANCE[] = {"IR", "IC", "EC", "ICE", "ICN", "TGV"};
+    const char* REGIONAL[] = {"S", "RE", "RB", "R", "T", "N", "SN"};
+    const char* NIGHT[] = {"N", "SN"};
+    if (transport.name == "null") return;
+
+    Serial.println("Connection: " + transport.category + transport.number);
+    Serial.println("To: " + transport.destination);
+    Serial.println("Departure: " + transport.departure);
+    Serial.println("Delay: " + transport.departure);
+    Serial.println("----------------------------");
+
+    sprite.setTextColor(TFT_WHITE, TFT_BLUE);
+    sprite.drawString(transport.departure, POS_TIME, yPos + 1);
+    
+    if (transport.delay.toInt() > 0) {
+        sprite.setTextColor(TFT_YELLOW, TFT_BLUE);
+        sprite.drawString("+" + transport.delay, POS_DELAY, yPos + 1);
+    }
+    
+    bool isLongDistance = std::any_of(std::begin(LONG_DISTANCE), std::end(LONG_DISTANCE),
+        [&](const char* cat) { return transport.category == cat; });
+    bool isRegional = std::any_of(std::begin(REGIONAL), std::end(REGIONAL),
+        [&](const char* cat) { return transport.category == cat; });
+    bool isNight = std::any_of(std::begin(NIGHT), std::end(NIGHT),
+        [&](const char* cat) { return transport.category == cat; });
+
+    if (isLongDistance) {
+        sprite.setTextColor(TFT_WHITE, TFT_RED);
+        sprite.fillRect(0, yPos, POS_TIME - POS_BUS - 1, POS_INC - 3, TFT_RED);
+    } else if (isRegional) {
+        sprite.setTextColor(TFT_BLUE, TFT_WHITE);
+        sprite.fillRect(0, yPos, POS_TIME - POS_BUS - 1, POS_INC - 3, TFT_WHITE);
+    } else if (isNight) {
+        sprite.setTextColor(TFT_WHITE, TFT_BLACK);
+        sprite.fillRect(0, yPos, POS_TIME - POS_BUS - 1, POS_INC - 3, TFT_BLACK);
+    } else {
+        sprite.setTextColor(TFT_WHITE, TFT_BLUE);
+    }
+
+    sprite.drawString(transport.category + transport.number, POS_BUS, yPos + 1);
+    sprite.setTextColor(TFT_WHITE, TFT_BLUE);
+    sprite.drawString(transport.destination, POS_TO, yPos + 1);
+}
+
+// void displayTransports(const std::vector<Transport>& transports) {
+//     // Filter out null transports
+//     std::vector<Transport> validTransports;
+//     std::copy_if(transports.begin(), transports.end(), std::back_inserter(validTransports),
+//         [](const Transport& t) { return t.name != "null"; });
+
+//     TFT_eSprite sprite(&tft);
+//     sprite.setColorDepth(8);
+    
+//     // Create one sprite for full height minus 50
+//     int spriteHeight = tft.height() - (2* POS_FIRST);
+//     sprite.createSprite(tft.width(), spriteHeight);
+//     sprite.loadFont(AA_FONT_SMALL);
+//     sprite.fillSprite(TFT_BLUE);
+
+//     // Calculate how many items can fit in the sprite
+//     int itemsPerScreen = spriteHeight / POS_INC;
+    
+//     // Draw all valid transports
+//     for (size_t i = 0; i < validTransports.size() && i < itemsPerScreen; i++) {
+//         drawTransport(sprite, validTransports[i], i * POS_INC);
+//     }
+    
+//     sprite.pushSprite(0, POS_FIRST);
+//     //sprite.deleteSprite();
+// }
+
+void displayTransports(const std::vector<Transport>& transports) {
+    TFT_eSprite sprite(&tft);
+    sprite.setColorDepth(8);
+    sprite.createSprite(tft.width(), 5 * POS_INC);
+    sprite.loadFont(AA_FONT_SMALL);
+
+    // Draw first half (0-4)
+    sprite.fillSprite(TFT_BLUE);
+    for (size_t i = 0; i < std::min(size_t(5), transports.size()); i++) {
+        
+        drawTransport(sprite, transports[i], i * POS_INC);
+    }
+    sprite.pushSprite(0, POS_FIRST);
+
+    // Draw second half (5-9)
+    sprite.fillSprite(TFT_BLUE);
+    for (size_t i = 5; i < transports.size(); i++) {
+        drawTransport(sprite, transports[i], (i-5) * POS_INC);
+    }
+    sprite.pushSprite(0, POS_FIRST + (5 * POS_INC));
+
+    //sprite.deleteSprite();
+}
+
+
+ void displayStatus(bool isSuccess) {
+    // Clear the status area with white background
+    tft.fillRect(tft.width() - 25, tft.height() - 25, 25, 25, TFT_WHITE);
+    
+    // Draw the circle in green or red based on status
+    tft.fillCircle(tft.width() - 13, tft.height() - 13, 3, 
+                   isSuccess ? TFT_GREEN : TFT_RED);
+}
+
+// JsonStreamingParser parser;
+TransportListener listener;
+
+void drawStation(const String& station) {
+    tft.loadFont(AA_FONT_SMALL);
+    tft.setTextColor(TFT_BLACK, TFT_WHITE);
+    tft.fillRect(0, 0, tft.width(), 25, TFT_WHITE);
+    tft.drawString(station, POS_BUS, 7);
+}
+
+void drawCurrentTime() {
+    timeClient.update();
+    
+    // Create temporary sprite for time display
+    TFT_eSprite timeSprite(&tft);
+    timeSprite.setColorDepth(8);
+    timeSprite.createSprite(tft.width() / 2, 25);
+    timeSprite.loadFont(AA_FONT_SMALL);
+    
+    // Clear sprite and set background
+    timeSprite.fillSprite(TFT_WHITE);
+    
+    
+    // Draw time and date
+    timeSprite.setTextColor(TFT_BLACK, TFT_WHITE);
+    timeSprite.drawString(getFormattedDateTime(), 4, 5);
+    
+    // Push to bottom of screen
+    timeSprite.pushSprite(0, tft.height() - 25);
+    
+    // Clean up
+    // timeSprite.deleteSprite();
+}
+
+String getFormattedTimeRelativeToNow(int minutesOffset) {
+    time_t epochTime = timeClient.getEpochTime() + (minutesOffset * 60);
+    struct tm *ptm = gmtime((time_t *)&epochTime);
+
+    char buffer[20];
+    snprintf(buffer, sizeof(buffer), "%04d-%02d-%02d %02d:%02d",
+             ptm->tm_year + 1900, 
+             ptm->tm_mon + 1, 
+             ptm->tm_mday,
+             ptm->tm_hour, 
+             ptm->tm_min);
+    return String(buffer);
+}
+
+void drawBTC() {
+    HTTPClient http;
+    http.setConnectTimeout(HTTP_TIMEOUT);
+    http.setTimeout(HTTP_TIMEOUT);
+    http.begin(getBTCAPI);
+    
+    int httpCode = http.GET();
+    Serial.print("HTTPCODE: ");
+    Serial.println(httpCode);
+
+    String bitcoin_price = "";
+    
+    if (httpCode == HTTP_CODE_OK) {
+
+        String payload = http.getString();
+        DynamicJsonDocument doc(1024);
+        DeserializationError error = deserializeJson(doc, payload);
+        
+        if (doc.containsKey("data") && doc["data"].containsKey("amount")) {
+            bitcoin_price = doc["data"]["amount"].as<String>().toInt();
+        }
+        displayStatus(true);
+    } else {
+        displayStatus(false);
+    }
+    
+    http.end();
+
+    // Create temporary sprite for BTC price display
+    TFT_eSprite btcSprite(&tft);
+    btcSprite.setColorDepth(8);
+    btcSprite.createSprite((tft.width() / 2) - 25, 25);
+    btcSprite.loadFont(AA_FONT_SMALL);
+    
+    // Clear sprite and set background
+    btcSprite.fillSprite(TFT_WHITE);
+    
+    // Draw BTC price
+    btcSprite.setTextDatum(TR_DATUM);
+    btcSprite.setTextColor(TFT_BLACK, TFT_WHITE);
+    btcSprite.drawString("BTC $" + bitcoin_price, btcSprite.width(), 5);
+    
+    // Push to bottom-right of screen
+    btcSprite.pushSprite(tft.width() / 2, tft.height() - 25);
+    
+    Serial.print("Bitcoin Price: ");
+    Serial.println(bitcoin_price);
+    
+    // Clean up
+    // btcSprite.deleteSprite();
+}
+
+void drawStationboard() {
+    static TransportListener listener;
+    HTTPClient http;
+    http.setConnectTimeout(HTTP_TIMEOUT);
+    
+    String url = "http://transport.opendata.ch/v1/stationboard?id=" + 
+                 URLEncode(config.stationId) + "&limit=" + URLEncode(String(config.limit)) +"&datetime=" + URLEncode(getFormattedTimeRelativeToNow(config.offset));
+
+    Serial.println("Relative Time: " + getFormattedTimeRelativeToNow(config.offset));
+    Serial.print("URL: ");
+    Serial.println(url);
+    http.begin(url);
+    
+    if (http.GET() == HTTP_CODE_OK) {
+        String response = http.getString();
+        // Handle Unicode characters
+        response.replace("\\u00fc", "ü");  // ü
+        response.replace("\\u00f6", "ö");  // ö
+        response.replace("\\u00e4", "ä");  // ä
+        response.replace("\\u00dc", "Ü");  // Ü
+        response.replace("\\u00d6", "Ö");  // Ö
+        response.replace("\\u00c4", "Ä");  // Ä
+        response.replace("\\u00e9", "é");  // é
+        response.replace("\\u00e0", "à");  // à
+        response.replace("\\u00e8", "è");  // è
+        
+        JsonStreamingParser parser;
+        parser.setListener(&listener);
+        for (char c : response) {
+            parser.parse(c);
+        }
+        parser.reset(); // Ensure parser is empty
+        drawStation(listener.getStation());
+        displayTransports(listener.getTransports());
+
+    }
+    http.end();
+}
+
+void checkForConfigReset() {
+    // Initialize trigger pin as input with pullup
+    pinMode(TRIGGER_PIN, INPUT_PULLUP);
+    
+    // Allow the device to boot properly
+    delay(1000);
+    
+    // Display instruction
+    tft.fillScreen(TFT_BLACK);
+    tft.loadFont(AA_FONT_SMALL);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.drawString("Press BOOT to reset", 20, 80);
+    tft.drawString("Waiting 3 seconds...", 20, 100);
+    
+    // Check for button press after boot
+    unsigned long startTime = millis();
+    while (millis() - startTime < 3000) {  // Wait 3 seconds for button press
+        if (digitalRead(TRIGGER_PIN) == LOW) {
+            delay(50);  // Simple debounce
+            if (digitalRead(TRIGGER_PIN) == LOW) {  // Double check
+                Serial.println("Reset button pressed - clearing WiFi settings");
+                
+                tft.fillScreen(TFT_BLACK);
+                tft.drawString("Clearing settings...", 20, 60);
+                
+                // Create WiFiManager instance
+                WiFiManager wm;
+                
+                // Reset settings
+                wm.resetSettings();
+                // Then try to mount and clear SPIFFS if possible
+                if (SPIFFS.begin(true)) {  // Mount SPIFFS with formatting on failure
+                    if (SPIFFS.exists("/config.json")) {
+                        SPIFFS.remove("/config.json");
+                        Serial.println("Config found and deleted");
+                    }
+                    SPIFFS.end();  // Clean unmount
+                }
+                tft.drawString("Settings cleared!", 20, 80);
+                tft.drawString("To config your Stationboard:", 20, 120);
+                tft.drawString("Connect to access point TransportDisplay_AP", 20, 140);
+                delay(2000);
+                
+                ESP.restart();
+            }
+        }
+        delay(10);
+    }
+}
+
+void saveConfigCallback () {
+    Serial.println("Should save config");
+    shouldSaveConfig = true;
+}
+
+void loadConfiguration() {
+    if (SPIFFS.exists("/config.json")) {
+        File configFile = SPIFFS.open("/config.json", FILE_READ);
+        if (configFile) {
+            DynamicJsonDocument doc(1024);
+            DeserializationError error = deserializeJson(doc, configFile);
+            
+            if (!error) {
+                config.stationId = doc["station_id"].as<String>();
+                config.limit = doc["limit"].as<int>();
+                config.offset = doc["offset"].as<int>();
+                // config.LCD_OFF_HOUR = doc["LCD_OFF_HOUR"].as<int>();
+                // config.LCD_ON_HOUR = doc["LCD_ON_HOUR"].as<int>();
+                config.defaultBrightness = doc["defaultBrightness"].as<int>();
+            }
+            configFile.close();
+        } else {
+            Serial.println("No config found");
+        }
+    }
+}
+
+void saveConfiguration() {
+    DynamicJsonDocument doc(1024);
+    doc["station_id"] = config.stationId;
+    doc["limit"] = config.limit;
+    doc["offset"] = config.offset;
+    // doc["LCD_OFF_HOUR"] = config.LCD_OFF_HOUR;
+    // doc["LCD_ON_HOUR"] = config.LCD_ON_HOUR;
+    doc["defaultBrightness"] = config.defaultBrightness;
+
+    File configFile = SPIFFS.open("/config.json", FILE_WRITE);
+    if (!configFile) {
+        Serial.println("- failed to open file for writing");
+        return;
+    }
+
+#if defined(ARDUINOJSON_VERSION_MAJOR) && ARDUINOJSON_VERSION_MAJOR >= 6
+    serializeJson(doc, Serial);
+    serializeJson(doc, configFile);
+#else
+    json.printTo(Serial);
+    json.printTo(configFile);
+#endif
+    configFile.close();
+    
+    // Verify the write
+    configFile = SPIFFS.open("/config.json");
+    if (!configFile) {
+        Serial.println("- failed to open file for verification");
+        return;
+    }
+    
+    if (configFile.size() > 0) {
+        Serial.println("- config file verified");
+        Serial.println("Contents:");
+        while(configFile.available()) {
+            Serial.write(configFile.read());
+        }
+    } else {
+        Serial.println("- config file appears empty");
+    }
+    configFile.close();
+}
+
+
+void setupWiFiManager() {
+    // Check for reset trigger first
+    Serial.println("Entering reset routine");
+    checkForConfigReset();
+
+    // Load existing configuration
+    Serial.println("Trying to load config from file");
+    loadConfiguration();
+
+    // Set config save notify callback
+    wm.setSaveConfigCallback(saveConfigCallback);
+
+    // Add custom parameters for transport display settings
+    WiFiManagerParameter custom_station_id("station", "Station ID", String(config.stationId).c_str(), 150);
+    WiFiManagerParameter custom_limit("limit", "Number of Entries", String(config.limit).c_str(), 2);
+    WiFiManagerParameter custom_offset("offset", "Time to station (min)", String(config.offset).c_str(), 2);
+    // WiFiManagerParameter custom_lcdon("LCD_ON_HOUR", "Hour of day to turn display on", String(config.LCD_ON_HOUR).c_str(), 2);
+    // WiFiManagerParameter custom_lcdoff("LCD_OFF_HOUR", "Hour of day to turn display off", String(config.LCD_OFF_HOUR).c_str(), 2);
+    WiFiManagerParameter custom_brightness("defaultBrightness", "Brightness level (0=off to 4=max)", String(config.defaultBrightness).c_str(), 1);
+    
+    wm.addParameter(&custom_station_id);
+    wm.addParameter(&custom_limit);
+    wm.addParameter(&custom_offset);
+    // wm.addParameter(&custom_lcdon);
+    // wm.addParameter(&custom_lcdoff);
+    wm.addParameter(&custom_brightness);
+
+    // Customize the configuration portal
+    wm.setTitle("Transport Display Setup");
+    
+    // Enable debug output
+    wm.setDebugOutput(true);
+    
+    // Set dark theme
+    wm.setClass("invert");
+
+    // Set configuration portal timeout (optional, in seconds)
+    wm.setConfigPortalTimeout(600);
+
+    // Start the configuration portal
+    if (!wm.autoConnect("TransportDisplay_AP")) {
+        tft.drawString("To config your Stationboard:", 10, 110);
+        tft.drawString("Connect to access point TransportDisplay_AP", 10, 130);
+        Serial.println("Failed to connect and hit timeout");
+
+        delay(3000);
+        ESP.restart();
+        delay(5000);
+    } else {
+        // If you get here you have connected to the WiFi
+        tft.drawString("Successfully connected to WiFi network!", 20, 100);
+        Serial.println("Successfully connected to WiFi network!");
+    }
+
+    
+    // Read updated parameters
+    config.stationId = custom_station_id.getValue();
+    config.limit = String(custom_limit.getValue()).toInt();
+    config.offset = String(custom_offset.getValue()).toInt();
+    // config.LCD_OFF_HOUR = String(custom_lcdoff.getValue()).toInt();
+    // config.LCD_ON_HOUR = String(custom_lcdoff.getValue()).toInt();
+    // config.defaultBrightness = String(custom_brightness.getValue()).toInt();
+
+    // Save the custom parameters to config
+    if (shouldSaveConfig) {
+        saveConfiguration();
+    }
+}
+
+void updateBrightness() {
+    // Set backlight brightness using LED PWM channel
+    ledcWrite(PWM_CHANNEL, BRIGHTNESS_LEVELS[currentBrightnessIndex]);
+    
+    // For debugging, output current level to serial (can also use display)
+    Serial.printf("Brightness level: %d\n", BRIGHTNESS_LEVELS[currentBrightnessIndex]);
+}
+
+void cycleBrightness() {
+
+    // Normal brightness cycling
+    currentBrightnessIndex = (currentBrightnessIndex + 1) % NUM_LEVELS;
+    updateBrightness();
+}
+
+void debugInfo() {
+    // Debug info (no WiFi needed)
+    Serial.printf("Free heap: %d bytes\n", ESP.getFreeHeap());
+    Serial.printf("Largest block: %d bytes\n", ESP.getMaxAllocHeap());
+    UBaseType_t watermark = uxTaskGetStackHighWaterMark(NULL);
+    Serial.printf("Stack watermark: %d bytes\n", watermark);
+    Serial.println("============ End of refresh cycle ==================");
+
+}
+
+void onOTAStart() {
+    // Log when OTA has started
+    Serial.println("OTA update started!");
+    // <Add your own code here>
+  }
+  
+void onOTAProgress(size_t current, size_t final) {
+// Log every 1 second
+    if (millis() - ota_progress_millis > 1000) {
+        ota_progress_millis = millis();
+        Serial.printf("OTA Progress Current: %u bytes, Final: %u bytes\n", current, final);
+    }
+}
+
+void onOTAEnd(bool success) {
+// Log when OTA has finished
+    if (success) {
+        Serial.println("OTA update finished successfully!");
+    } else {
+        Serial.println("There was an error during OTA update!");
+    }
+    // <Add your own code here>
+}
+
+void handleLongPress() {
+    if (!otaMode) {
+        otaMode = true;
+        server.on("/", HTTP_GET, []() {
+            server.send(200, "text/html", "<a href='/update'>Update</a>");
+        });
+        ElegantOTA.begin(&server);
+        // ElegantOTA callbacks
+        ElegantOTA.onStart(onOTAStart);
+        ElegantOTA.onProgress(onOTAProgress);
+        ElegantOTA.onEnd(onOTAEnd);
+        server.begin();
+        
+        tft.loadFont(AA_FONT_SMALL);
+        tft.setTextColor(TFT_WHITE, TFT_BLUE);
+        tft.fillScreen(TFT_BLACK);
+        tft.drawString("Update Mode",20, 80);
+        tft.drawString("To update, point your browser to:", 20, 120);
+        tft.drawString("http://" + WiFi.localIP().toString() + "/update", 20, 140);
+    }
+}
+
+void setup() {
+    Serial.begin(115200);
+
+    if (SPIFFS.begin(true)) {
+        Serial.println("SPIFFS Mounted");
+    }
+
+    // Initialize display
+    tft.init();
+    tft.setRotation(1);
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_WHITE);
+
+    // Initialize PWM for backlight
+    ledcSetup(PWM_CHANNEL, PWM_FREQ, PWM_RESOLUTION);
+    ledcAttachPin(BACKLIGHT_PIN, PWM_CHANNEL);
+    currentBrightnessIndex = config.defaultBrightness; //setting initial brightness from setup
+    updateBrightness();
+
+    // Set up button callbacks
+    button.setPressMs(10000); // 10 seconds for long press
+    button.attachClick(cycleBrightness);
+    button.attachLongPressStart(handleLongPress);
+
+    // reset settings - wipe stored credentials for testing
+    // these are stored by the esp library
+    // wm.resetSettings();
+
+    // Call WiFiManager setup
+    setupWiFiManager();
+         
+    // Initialize time client
+    timeClient.begin();
+    timeClient.setUpdateInterval(900000); // Update every 15 minutes (900000ms)
+    timeClient.setTimeOffset(timeOffset); // UTC+1 (Sowieso nur Schwiiz)
+
+    // Initial Scren Setup
+    tft.fillScreen(TFT_BLUE);
+    tft.fillRect(0, tft.height() - 25 , tft.width(), 25, TFT_WHITE); //footer
+    tft.loadFont(AA_FONT_SMALL);
+    tft.setTextColor(TFT_WHITE, TFT_BLUE);
+
+    // Initial data fetch
+    if (WiFi.status() == WL_CONNECTED) {
+        drawCurrentTime();
+        drawStationboard();
+        drawBTC();
+    }
+
+    debugInfo();
+
+}
+
+void loop() {
+    button.tick();
+
+    if (otaMode){
+        server.handleClient();
+        ElegantOTA.loop();
+    } else {
+
+        unsigned long currentMillis = millis();
+        
+        if (currentMillis - previousMillis >= UPDATE_INTERVAL) {
+            previousMillis = currentMillis;
+            
+            if (WiFi.status() == WL_CONNECTED) {
+                drawCurrentTime();
+                drawStationboard();
+                drawBTC();
+            } else {
+                tft.setTextColor(TFT_RED, TFT_BLUE);
+                tft.drawString("WiFi disconnected", POS_BUS, POS_FIRST);
+                Serial.println("Wifi disconnected");
+                WiFi.reconnect();
+            }
+
+        debugInfo();
+
+        }
+    }
+}

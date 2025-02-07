@@ -1,0 +1,314 @@
+#include <Arduino.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <SPI.h>
+#include "TFT_eSPI.h"
+#include <WiFiUdp.h>
+#include <NTPClient.h>
+#include <FS.h>
+#include <JsonListener.h>
+#include <JsonStreamingParser.h>
+
+const char* ssid = "Fortuna";
+const char* password = "Allrueti136343Rotkreuz";
+const String base_url = "http://transport.opendata.ch/v1/stationboard?id=8577582&limit=1";
+const unsigned long UPDATE_INTERVAL = 30000; // Update every 30 seconds
+unsigned long lastUpdate = 0;
+
+TFT_eSPI tft = TFT_eSPI();
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP);
+
+class TransportListener: public JsonListener {
+private:
+    String currentKey;
+    String currentPath;
+    bool inStationboard = false;
+    bool inStop = false;
+    int displayedTransports = 0;
+    TFT_eSPI& display;
+    
+    struct {
+        String number;
+        String operatorName;
+        String destination;
+        String scheduled_departure;
+        String actual_departure;
+        bool has_prognosis = false;
+        int delay = 0;
+    } currentTransport;
+
+    void resetTransport() {
+        currentTransport.number = "";
+        currentTransport.operatorName = "";
+        currentTransport.destination = "";
+        currentTransport.scheduled_departure = "";
+        currentTransport.actual_departure = "";
+        currentTransport.has_prognosis = false;
+        currentTransport.delay = 0;
+    }
+    
+    String extractTime(const String& isoTime) {
+        if (isoTime.length() >= 16) {
+            return isoTime.substring(11, 16); // Extract HH:MM
+        }
+        return "";
+    }
+    
+    int calculateDelay(const String& scheduled, const String& actual) {
+        if (scheduled.length() >= 16 && actual.length() >= 16) {
+            // Extract hours and minutes
+            int scheduledHour = scheduled.substring(11, 13).toInt();
+            int scheduledMin = scheduled.substring(14, 16).toInt();
+            int actualHour = actual.substring(11, 13).toInt();
+            int actualMin = actual.substring(14, 16).toInt();
+            
+            // Convert to minutes since midnight
+            int scheduledTime = scheduledHour * 60 + scheduledMin;
+            int actualTime = actualHour * 60 + actualMin;
+            
+            // Calculate delay
+            int delay = actualTime - scheduledTime;
+            
+            // Handle cases where delay crosses midnight
+            if (delay < -720) { // More than 12 hours negative
+                delay += 1440;  // Add 24 hours
+            } else if (delay > 720) { // More than 12 hours positive
+                delay -= 1440;  // Subtract 24 hours
+            }
+            
+            return delay;
+        }
+        return 0;
+    }
+
+public:
+    TransportListener(TFT_eSPI& tft) : display(tft) {}
+    
+    virtual void whitespace(char c) {
+        // Ignore whitespace characters
+    }
+
+    void startDocument() {
+        display.fillScreen(TFT_BLACK);
+        display.setTextColor(TFT_WHITE, TFT_BLACK);
+        display.setTextSize(1);
+        display.drawString("Cham, Gemeindehaus", 5, 5);
+        
+        // Draw header line
+        display.drawFastHLine(0, 20, display.width(), TFT_BLUE);
+        displayedTransports = 0;
+        currentPath = "";
+        inStationboard = false;
+        inStop = false;
+        resetTransport();
+    }
+
+    void key(String key) {
+        currentKey = key;
+        if (key == "stationboard") {
+            currentPath = "/stationboard";
+        } else if (inStationboard) {
+            currentPath = "/stationboard/" + key;
+        }
+    }
+
+    void value(String value) {
+        // Debug output
+        Serial.print("Value found - Key: ");
+        Serial.print(currentKey);
+        Serial.print(" Path: ");
+        Serial.print(currentPath);
+        Serial.print(" Value: ");
+        Serial.println(value);
+        
+        if (currentPath.startsWith("/stationboard")) {
+            if (currentKey == "number") {
+                currentTransport.number = value;
+                Serial.println("Found number: " + value);
+            } else if (currentKey == "operator") {
+                currentTransport.operatorName = value;
+                Serial.println("Found operator: " + value);
+            } else if (currentKey == "to") {
+                currentTransport.destination = value;
+                Serial.println("Found destination: " + value);
+            } else if (currentKey == "departure") {
+                if (currentPath.indexOf("/prognosis") != -1) {
+                    // This is a prognosis departure time
+                    currentTransport.has_prognosis = true;
+                    currentTransport.actual_departure = value;
+                    Serial.println("Found prognosis departure: " + value);
+                } else if (currentPath.indexOf("/stop") != -1) {
+                    // This is a scheduled departure time
+                    currentTransport.scheduled_departure = value;
+                    Serial.println("Found scheduled departure: " + value);
+                }
+                
+                // Calculate delay if we have both times
+                if (currentTransport.has_prognosis && 
+                    currentTransport.scheduled_departure.length() > 0 &&
+                    currentTransport.actual_departure.length() > 0) {
+                    currentTransport.delay = calculateDelay(
+                        currentTransport.scheduled_departure,
+                        currentTransport.actual_departure
+                    );
+                    Serial.print("Calculated delay: ");
+                    Serial.println(currentTransport.delay);
+                }
+            }
+        }
+    }
+
+    void endArray() {
+        if (currentPath == "/stationboard") {
+            inStationboard = false;
+        }
+    }
+
+    void startArray() {
+        if (currentPath == "/stationboard") {
+            inStationboard = true;
+        }
+    }
+
+    void startObject() {
+        Serial.print("StartObject with key: ");
+        Serial.println(currentKey);
+        
+        if (currentKey == "stop") {
+            inStop = true;
+            currentPath += "/stop";
+        } else if (currentKey == "prognosis" && inStop) {
+            currentPath += "/prognosis";
+        }
+        
+        Serial.print("Path after startObject: ");
+        Serial.println(currentPath);
+    }
+
+    void endObject() {
+        Serial.print("EndObject with path: ");
+        Serial.println(currentPath);
+        
+        if (currentPath.endsWith("/prognosis")) {
+            currentPath = currentPath.substring(0, currentPath.lastIndexOf("/prognosis"));
+        } else if (inStop && currentPath.endsWith("/stop")) {
+            inStop = false;
+            currentPath = currentPath.substring(0, currentPath.lastIndexOf("/stop"));
+            displayTransport();
+            resetTransport();
+        }
+        
+        Serial.print("Path after endObject: ");
+        Serial.println(currentPath);
+    }
+
+    void endDocument() {
+        // Draw current time at the bottom
+        display.setTextColor(TFT_YELLOW, TFT_BLACK);
+        display.drawString("Last update: " + timeClient.getFormattedTime(), 5, display.height() - 20);
+    }
+
+private:
+    void displayTransport() {
+        if (currentTransport.number.length() > 0 && displayedTransports < 3) {
+            int yPos = 30 + (displayedTransports * 45);
+            
+            // Line number and destination
+            display.setTextColor(TFT_GREEN, TFT_BLACK);
+            display.drawString(currentTransport.number, 5, yPos);
+            display.setTextColor(TFT_WHITE, TFT_BLACK);
+            display.drawString(currentTransport.destination, 50, yPos);
+            
+            // Scheduled departure time
+            display.setTextColor(TFT_CYAN, TFT_BLACK);
+            String displayTime = extractTime(currentTransport.scheduled_departure);
+            display.drawString(displayTime, 5, yPos + 15);
+            
+            // Delay calculation and display
+            if (currentTransport.has_prognosis && currentTransport.delay != 0) {
+                String delayText;
+                if (currentTransport.delay > 0) {
+                    display.setTextColor(TFT_RED, TFT_BLACK);
+                    delayText = "+" + String(currentTransport.delay) + "'";
+                } else {
+                    display.setTextColor(TFT_GREEN, TFT_BLACK);
+                    delayText = String(currentTransport.delay) + "'";
+                }
+                display.drawString(delayText, 50, yPos + 15);
+                
+                // Show actual departure time
+                String actualTime = extractTime(currentTransport.actual_departure);
+                display.setTextColor(TFT_YELLOW, TFT_BLACK);
+                display.drawString(actualTime, 90, yPos + 15);
+            }
+            
+            // Separator line
+            display.drawFastHLine(0, yPos + 35, display.width(), TFT_DARKGREY);
+            
+            displayedTransports++;
+        }
+    }
+};
+
+JsonStreamingParser parser;
+TransportListener* listener;
+
+void setup() {
+    Serial.begin(115200);
+    
+    // Initialize display
+    tft.init();
+    tft.setRotation(1);
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_WHITE);
+    
+    // Create listener with display reference
+    listener = new TransportListener(tft);
+    parser.setListener(listener);
+    
+    // Connect to WiFi
+    WiFi.begin(ssid, password);
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(500);
+        tft.drawString("Connecting to WiFi...", 20, 60);
+    }
+    
+    // Initialize time client
+    timeClient.begin();
+    timeClient.setTimeOffset(3600); // UTC+1
+}
+
+void loop() {
+    unsigned long currentMillis = millis();
+    
+    if (currentMillis - lastUpdate >= UPDATE_INTERVAL) {
+        timeClient.update();
+        
+        if (WiFi.status() == WL_CONNECTED) {
+            HTTPClient http;
+            http.begin(base_url);
+            
+            int httpCode = http.GET();
+            if (httpCode == HTTP_CODE_OK) {
+                WiFiClient& stream = http.getStream();
+                while (stream.available()) {
+                    char c = stream.read();
+                    parser.parse(c);
+                }
+            } else {
+                tft.setTextColor(TFT_RED, TFT_BLACK);
+                tft.drawString("HTTP Error: " + String(httpCode), 5, tft.height() - 30);
+            }
+            
+            http.end();
+        } else {
+            tft.setTextColor(TFT_RED, TFT_BLACK);
+            tft.drawString("WiFi disconnected", 5, tft.height() - 30);
+        }
+        
+        lastUpdate = currentMillis;
+    }
+    
+    delay(10);
+}
