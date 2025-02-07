@@ -25,6 +25,7 @@ void loadConfiguration();
 void saveConfiguration();
 void saveConfigCallback();
 void displayStatus(bool isSuccess);
+void startConfigPortal();
 void switchStation();
 
 // Constants
@@ -34,6 +35,10 @@ extern const int BRIGHTNESS_LEVELS[];
 extern const int NUM_LEVELS;
 extern int currentBrightnessIndex;
 extern const int PWM_CHANNEL;
+
+// Global variables
+extern int numClicks;
+extern bool portalRunning;
 
 // ArduinoJson forward declarations
 using ArduinoJson::DynamicJsonDocument;

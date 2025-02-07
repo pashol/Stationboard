@@ -1,6 +1,7 @@
 #include "utilities.h"
 #include "globals.h"
 #include "stationboard.h"
+#include <WiFiManager.h>
 #include <FS.h>
 #include <SPIFFS.h>
 #include <ArduinoJson.h>
@@ -46,7 +47,7 @@ void checkForConfigReset() {
                 }
                 tft.drawString("Settings cleared!", 20, 80);
                 tft.drawString("To configure:", 20, 120);
-                tft.drawString("Connect to Wifi TransportDisplay_AP", 20, 140);
+                tft.drawString("Connect to Wifi Stationboard_AP", 20, 140);
                 delay(2000);
                 
                 ESP.restart();
@@ -222,6 +223,24 @@ void saveConfiguration() {
 void saveConfigCallback() {
     Serial.println("Should save config");
     shouldSaveConfig = true;
+}
+
+void startConfigPortal() {
+    int numClicks = button.getNumberClicks();
+    if (numClicks == 3) {  // Triple click
+        Serial.println("Triple click detected");
+        if(!portalRunning){
+            Serial.println("Starting Portal");
+            Serial.printf("Config portal started at: http://%s\n", WiFi.localIP().toString().c_str());
+            wm.startWebPortal();
+            portalRunning = true;
+          }
+          else{
+            Serial.println("Stopping Portal");
+            wm.stopWebPortal();
+            portalRunning = false;
+          }
+    }
 }
 
 void switchStation() {

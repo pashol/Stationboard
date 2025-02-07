@@ -26,6 +26,27 @@ void setupWiFiManager() {
     // Set config save notify callback
     wm.setSaveConfigCallback(saveConfigCallback);
 
+    // First, create the welcome message as a parameter
+    const char* welcomeHTML = ""
+        "<div style='text-align:left; padding:15px; margin:10px; background:#666; color:white; border-radius:4px'>"
+        "<h2>Welcome to Stationboard Setup!</h2>"
+        "<p>This device shows real-time public transport departures for Swiss stations.</p>"
+        "<p><b>To configure your display:</b></p>"
+        "<ol>"
+        "<li>Enter your WiFi credentials</li>"
+        "<li>Set your station ID (doesn't need to be exact)</li>"
+        "<li>Configure display preferences</li>"
+        "<li>For firmware updates press button for 10s on main screen</li>"
+        "</ol>"
+        "<p><b>Need help? Contact:</b></p>"
+        "<p>✉️ pascal.holzmann@gmail.com</p>"
+        "<p>🌐 https://github.com/pashol/Stationboard</p>"
+        "</div>";
+    
+    // Add welcome message as a parameter FIRST
+    WiFiManagerParameter custom_html(welcomeHTML);
+    wm.addParameter(&custom_html);
+
     // Add custom parameters for transport display settings
     WiFiManagerParameter custom_station_id("station", "Station ID 1", String(config.stationId).c_str(), 150);
     WiFiManagerParameter custom_station_id2("station2", "Station ID 2", String(config.stationId2).c_str(), 150);
@@ -40,21 +61,24 @@ void setupWiFiManager() {
     wm.addParameter(&custom_brightness);
 
     // Customize the configuration portal
-    wm.setTitle("Transport Display Setup");
+    wm.setTitle("Stationboard Setup");
+
+    // Set dark theme
+    wm.setClass("invert");
+
+    // Disable firmware updates
+    wm.setShowInfoUpdate(false);  // This disables the firmware update menu item
     
     // Enable debug output
     wm.setDebugOutput(true);
     
-    // Set dark theme
-    wm.setClass("invert");
-
     // Set configuration portal timeout (optional, in seconds)
     wm.setConfigPortalTimeout(600);
 
     // Start the configuration portal
-    if (!wm.autoConnect("TransportDisplay_AP")) {
+    if (!wm.autoConnect("Stationboard_AP")) {
         tft.drawString("To config your Stationboard:", 10, 110);
-        tft.drawString("Connect to access point TransportDisplay_AP", 10, 130);
+        tft.drawString("Connect mobile to 'Stationboard_AP'", 10, 130);
         Serial.println("Failed to connect and hit timeout");
 
         delay(3000);

@@ -7,6 +7,8 @@
 #include "stationboard.h"
 #include "ota.h"
 
+
+
 void setup() {
     Serial.begin(115200);
 
@@ -26,8 +28,10 @@ void setup() {
     updateBrightness(); //initial value
 
     // Set up button callbacks
+    button.setClickMs(500); // 500ms for single click
     button.attachClick(cycleBrightness);
     button.attachDoubleClick(switchStation);
+    button.attachMultiClick(startConfigPortal);
     button.setPressMs(10000); // 10 seconds for long press
     button.attachLongPressStart(handleLongPress);
 
@@ -61,6 +65,10 @@ void setup() {
 
 void loop() {
     button.tick();
+
+    if(portalRunning){
+        wm.process();
+    }
 
     handleOTA();
 

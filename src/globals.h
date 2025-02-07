@@ -23,6 +23,8 @@ extern TFT_eSPI tft;
 extern WiFiManager wm;
 extern bool shouldSaveConfig;
 extern const char* AA_FONT_SMALL;
+extern int numClicks;
+extern bool portalRunning;
 
 // Constants
 extern const long timeOffset;
