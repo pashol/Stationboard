@@ -12,10 +12,7 @@
 void lightSleep() {
     Serial.println("Preparing for light sleep...");
     
-    // Store current backlight state
-    int currentBrightness = ledcRead(PWM_CHANNEL);
-
-    if (currentBrightness > 192 ) {
+    if (currentBrightnessIndex > 3 ) {
         // Configure wake-up sources
         esp_sleep_enable_timer_wakeup(SLEEP_DURATION);
         esp_sleep_enable_ext0_wakeup(BUTTON_SLEEP, 0);
@@ -30,7 +27,7 @@ void lightSleep() {
         
         // Restore PWM configuration
         ledcAttachPin(TFT_BL, PWM_CHANNEL);
-        ledcWrite(PWM_CHANNEL, currentBrightness);
+        updateBrightness();
         
         if(wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) {
             Serial.println("Woken up by button");
@@ -39,7 +36,7 @@ void lightSleep() {
             Serial.println("Woken up by timer");
         }
     } else {
-        Serial.println("Not entering light sleep, brightness too low, flickering may occur");
+        Serial.println("No light sleep, brightness too low");
         setCpuFrequencyMhz(80);
         Serial.println("CPU:" + String(getCpuFrequencyMhz()) + "MHz");
     }
@@ -123,7 +120,7 @@ void loop() {
 
     if (!otaMode) {
         if (!isUpdating && currentMillis - lastUpdate >= UPDATE_INTERVAL) {
-            setCpuFrequencyMhz(240);
+            setCpuFrequencyMhz(240); // Set CPU frequency to 240MHz
             if (WiFi.status() == WL_CONNECTED) {
                 drawCurrentTime();
                 drawStationboard();

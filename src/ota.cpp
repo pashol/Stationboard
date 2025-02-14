@@ -27,6 +27,7 @@ void onOTAEnd(bool success) {
 
 void handleLongPress() {
     if (!otaMode) {
+        setCpuFrequencyMhz(240);
         otaMode = true;
         server.on("/", HTTP_GET, []() {
             server.send(200, "text/html", "<a href='/update'>Update</a>");
