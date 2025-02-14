@@ -49,6 +49,9 @@ extern const int BRIGHTNESS_LEVELS[];
 extern const int NUM_LEVELS;
 extern int currentBrightnessIndex;
 
+// Konstanten Sleep
+#define SLEEP_DURATION 55000000    // 55 Sekunden
+
 // PWM constants
 extern const int PWM_CHANNEL;
 extern const int PWM_FREQ;
@@ -62,6 +65,7 @@ extern const unsigned long TEMP_ON_DURATION;
 // Loop refresh cycle
 extern unsigned long previousMillis;
 extern const unsigned long UPDATE_INTERVAL;
+extern const unsigned long UPDATE_DURATION;
 
 // Objects
 extern OneButton button;

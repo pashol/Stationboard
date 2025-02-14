@@ -154,12 +154,20 @@ void cycleBrightness() {
 }
 
 void debugInfo() {
-    // Debug info (no WiFi needed)
+    Serial.println("Debug info:");
     Serial.printf("Free heap: %d bytes\n", ESP.getFreeHeap());
     Serial.printf("Largest block: %d bytes\n", ESP.getMaxAllocHeap());
     UBaseType_t watermark = uxTaskGetStackHighWaterMark(NULL);
     Serial.printf("Stack watermark: %d bytes\n", watermark);
-    Serial.println("============ End of refresh cycle ==================");
+    Serial.println("RSSI: " + String(WiFi.RSSI()) + "dBm");
+    Serial.println("WiFi:" + String(WiFi.status()));
+    Serial.println("SSID:" + WiFi.SSID());
+    Serial.println("IP:" + WiFi.localIP().toString());
+    Serial.println("MAC:" + WiFi.macAddress());
+    Serial.println("CPU:" + String(getCpuFrequencyMhz()) + "MHz");
+    Serial.println("BL:" + String(ledcRead(PWM_CHANNEL)));
+    //Serial.println("VDD:" + String(readVDD()) + "mV");
+    Serial.println("Uptime:" + String(millis() / 1000) + "s");
 }
 
 void loadConfiguration() {
