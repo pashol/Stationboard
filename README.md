@@ -1,3 +1,13 @@
+# Implemented Features
+- [x] Second Station (double click)
+- [x] OTA Firmware Update (long press)
+- [x] Distance to station as parameter
+- [x] Refactring code
+- [x] Power savings
+- [x] Fixing sprite issues (low memory)
+- [ ] Night mode
+- [ ] From-To-Stationboard
+- [ ] OTA over internet
 
 # Power considerations
 Based on the provided power consumption data for the ESP32 and the LCD backlight, we can estimate the power draw for each brightness level as follows:
