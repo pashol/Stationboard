@@ -10,7 +10,7 @@ Never miss your train again! This WiFi-enabled real-time display shows departure
 - Compact design
 - Live updates of Swiss public transport data
 
-Easy installation: Just needs WiFi (2.4 GHz) and power outlet.
+Easy installation: Just needs WiFi (2.4 GHz) and USB power.
 
 Bring the train station display to your home or office! Get accurate departure times for buses, trains, and boats right where you need them.
 
