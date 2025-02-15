@@ -10,12 +10,13 @@
 #define BUTTON_SLEEP GPIO_NUM_0  // Boot Button
 
 void lightSleep() {
-    Serial.println("Preparing for light sleep...");
+    Serial.println("Preparing for sleep...");
     
     if (currentBrightnessIndex > 3 ) {
         // Configure wake-up sources
         esp_sleep_enable_timer_wakeup(SLEEP_DURATION);
         esp_sleep_enable_ext0_wakeup(BUTTON_SLEEP, 0);
+        esp_sleep_enable_wifi_wakeup();
         
         Serial.println("Entering light sleep");
         Serial.flush();
@@ -36,11 +37,25 @@ void lightSleep() {
             Serial.println("Woken up by timer");
         }
     } else {
-        Serial.println("No light sleep, brightness too low");
+        Serial.println("No light sleep, reduce CPU frequency");
         setCpuFrequencyMhz(80);
         Serial.println("CPU:" + String(getCpuFrequencyMhz()) + "MHz");
     }
 
+}
+
+void reconnectWiFi() {
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("WiFi not connected, reconnecting...");
+        WiFi.disconnect();
+        delay(100);
+        WiFi.reconnect();
+        int attempts = 0;
+        while (WiFi.status() != WL_CONNECTED && attempts < 10) {
+            delay(500);
+            attempts++;
+        }
+    }
 }
 
 void setup() {
@@ -74,7 +89,8 @@ void setup() {
 
     // Call WiFiManager setup
     setupWiFiManager();
-
+    esp_wifi_set_ps(WIFI_PS_NONE); // Disable WiFi power save mode
+    
     // Set custom brightness
     currentBrightnessIndex = config.defaultBrightness; //setting initial brightness from setup
     updateBrightness();
@@ -99,7 +115,7 @@ void setup() {
 
     debugInfo();
     // lightSleep();
-    Serial.println("============ End of startup ==================");
+    Serial.println("============ End of setup ==================");
 }
 
 // Global variables for timing
@@ -120,7 +136,10 @@ void loop() {
 
     if (!otaMode) {
         if (!isUpdating && currentMillis - lastUpdate >= UPDATE_INTERVAL) {
-            setCpuFrequencyMhz(240); // Set CPU frequency to 240MHz
+            if (getCpuFrequencyMhz() != 240) setCpuFrequencyMhz(240); // Set CPU frequency to 240MHz
+
+            reconnectWiFi();
+
             if (WiFi.status() == WL_CONNECTED) {
                 drawCurrentTime();
                 drawStationboard();
@@ -131,10 +150,6 @@ void loop() {
                 isUpdating = true;
             } else {
                 displayStatus(false);
-                Serial.println("WiFi disconnected, attempting reconnection...");
-                WiFi.disconnect();
-                WiFi.reconnect();
-                delay(1000);
             }
         }
         

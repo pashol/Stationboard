@@ -20,7 +20,7 @@ const char* getBTCAPI = "https://api.coinbase.com/v2/prices/BTC-USD/spot";
 const int BUTTON_PIN = 0;
 const int BRIGHTNESS_LEVELS[] = {0, 64, 128, 192, 255};
 const int NUM_LEVELS = sizeof(BRIGHTNESS_LEVELS) / sizeof(BRIGHTNESS_LEVELS[0]);
-int currentBrightnessIndex = 3;
+int currentBrightnessIndex = 4;
 
 const int PWM_CHANNEL = 0; 
 const int PWM_FREQ = 5000;
@@ -31,6 +31,7 @@ unsigned long temporaryOnStart = 0;
 const unsigned long TEMP_ON_DURATION = 300000;
 
 unsigned long previousMillis = 0;
+const unsigned long SLEEP_DURATION = 57000000;    // 57 Sekunden
 const unsigned long UPDATE_INTERVAL = 60000; // 60 seconds between updates
 const unsigned long UPDATE_DURATION = 5000; // 5 seconds for update to complete
 
