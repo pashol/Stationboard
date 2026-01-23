@@ -95,10 +95,9 @@ void setup() {
     currentBrightnessIndex = config.defaultBrightness; //setting initial brightness from setup
     updateBrightness();
          
-    // Initialize time client
+    // Initialize time client (UTC - DST conversion handled by Timezone library)
     timeClient.begin();
     timeClient.setUpdateInterval(3600000); // Update every 60 minutes (3600000)
-    timeClient.setTimeOffset(timeOffset); // UTC+1 (Sowieso nur Schwiiz)
 
     // Initial Screen Setup
     tft.fillScreen(TFT_BLUE);

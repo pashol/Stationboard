@@ -13,7 +13,7 @@ bool shouldSaveConfig = false;
 bool portalRunning = false;
 int numClicks = 0;
 
-const long timeOffset = 3600; // UTC+1
+const long timeOffset = 0; // UTC (DST handled by Timezone library in utilities.cpp)
 const unsigned long HTTP_TIMEOUT = 10000;
 const char* getBTCAPI = "https://api.coinbase.com/v2/prices/BTC-USD/spot";
 

@@ -6,6 +6,13 @@
 #include <SPIFFS.h>
 #include <ArduinoJson.h>
 #include <WiFiManager.h>
+#include <TimeLib.h>
+#include <Timezone.h>
+
+// Central European Time (Switzerland) with DST rules
+TimeChangeRule CEST = {"CEST", Last, Sun, Mar, 2, 120};  // UTC+2 (summer)
+TimeChangeRule CET  = {"CET ", Last, Sun, Oct, 3, 60};   // UTC+1 (winter)
+Timezone euCET(CEST, CET);
 
 void checkForConfigReset() {
     // Initialize trigger pin as input with pullup
@@ -75,34 +82,39 @@ String URLEncode(String msg) {
 }
 
 String getTimeWithoutSeconds() {
-    String hourStr = String(timeClient.getHours());
+    time_t utc = timeClient.getEpochTime();
+    time_t local = euCET.toLocal(utc);
+
+    String hourStr = String(hour(local));
     if (hourStr.length() < 2) hourStr = "0" + hourStr;
-    
-    String minuteStr = String(timeClient.getMinutes());
+
+    String minuteStr = String(minute(local));
     if (minuteStr.length() < 2) minuteStr = "0" + minuteStr;
-    
+
     return hourStr + ":" + minuteStr;
 }
 
 String getFormattedDateTime() {
-    time_t epochTime = timeClient.getEpochTime();
-    struct tm *ptm = gmtime ((time_t *)&epochTime);
-    
+    time_t utc = timeClient.getEpochTime();
+    time_t local = euCET.toLocal(utc);
+
     String dateTime = getTimeWithoutSeconds();
     dateTime += " - ";
-    dateTime += String(ptm->tm_mday);
+    dateTime += String(day(local));
     dateTime += ". ";
-    dateTime += MONTHS[ptm->tm_mon];
+    dateTime += MONTHS[month(local) - 1];  // month() returns 1-12, MONTHS is 0-indexed
 
     // Add year
     dateTime += " ";
-    dateTime += String(ptm->tm_year + 1900);
-    
+    dateTime += String(year(local));
+
     return dateTime;
 }
 
 String getDayOfWeek() {
-    return DAYS[timeClient.getDay()];
+    time_t utc = timeClient.getEpochTime();
+    time_t local = euCET.toLocal(utc);
+    return DAYS[weekday(local) - 1];  // weekday() returns 1-7 (Sun-Sat), DAYS is 0-indexed
 }
 
 void drawCurrentTime() {
@@ -126,16 +138,16 @@ void drawCurrentTime() {
 }
 
 String getFormattedTimeRelativeToNow(int minutesOffset) {
-    time_t epochTime = timeClient.getEpochTime() + (minutesOffset * 60);
-    struct tm *ptm = gmtime((time_t *)&epochTime);
+    time_t utc = timeClient.getEpochTime() + (minutesOffset * 60);
+    time_t local = euCET.toLocal(utc);
 
     char buffer[20];
     snprintf(buffer, sizeof(buffer), "%04d-%02d-%02d %02d:%02d",
-             ptm->tm_year + 1900, 
-             ptm->tm_mon + 1, 
-             ptm->tm_mday,
-             ptm->tm_hour, 
-             ptm->tm_min);
+             year(local),
+             month(local),
+             day(local),
+             hour(local),
+             minute(local));
     return String(buffer);
 }
 
