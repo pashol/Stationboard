@@ -39,25 +39,11 @@ Bring the train station display to your home or office! Get accurate departure t
 
 ### Prerequisites
 
-- [PlatformIO](https://platformio.org/) (CLI or VS Code extension)
+- [PlatformIO](https://platformio.org/) (CLI or VS Code extension) Only for building from source
 - USB cable for initial flashing
 
-### Build and Upload
-
-```bash
-# Clone the repository
-git clone https://github.com/pashol/Stationboard.git
-cd Stationboard
-
-# Build firmware
-pio run
-
-# Upload to device (connect via USB)
-pio run -t upload
-
-# Monitor serial output (optional)
-pio device monitor
-```
+### Flash 
+Use [this](https://esptool.spacehuhn.com) to flash the files from the release
 
 ## Configuration
 
@@ -120,6 +106,23 @@ Based on the provided power consumption data for the ESP32 and the LCD backlight
 | 4 | 255 | 50-100mA | Light sleep (~0.8mA) | 50.8-100.8mA |
 
 These estimates assume linear scaling of backlight power consumption with PWM duty cycle. The actual power draw may vary based on the specific characteristics of the LCD and the ESP32-2432S028R.
+
+### Build and Upload
+
+```bash
+# Clone the repository
+git clone https://github.com/pashol/Stationboard.git
+cd Stationboard
+
+# Build firmware
+pio run
+
+# Upload to device (connect via USB)
+pio run -t upload
+
+# Monitor serial output (optional)
+pio device monitor
+```
 
 ## Architecture
 
