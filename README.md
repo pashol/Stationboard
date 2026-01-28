@@ -25,6 +25,7 @@ Bring the train station display to your home or office! Get accurate departure t
 - **OTA firmware updates** - update wirelessly via web browser
 - **WiFi configuration portal** - easy setup via smartphone
 - **Automatic time sync** with NTP (handles DST)
+- **Night mode** - automatic power saving from 22:00 to 06:00
 
 ## Hardware Requirements
 
@@ -155,7 +156,7 @@ src/
 - [x] Code refactoring
 - [x] Power savings
 - [x] Fixing sprite issues (low memory)
-- [ ] Night mode
+- [x] Night mode (automatic time-based activation, 22:00-06:00)
 - [ ] From-To-Stationboard
 - [ ] OTA over internet
 
