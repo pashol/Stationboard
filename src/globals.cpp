@@ -31,7 +31,7 @@ unsigned long temporaryOnStart = 0;
 const unsigned long TEMP_ON_DURATION = 300000;
 
 unsigned long previousMillis = 0;
-const unsigned long SLEEP_DURATION = 57000000;    // 57 Sekunden
+const unsigned long SLEEP_DURATION = 57000000;    // 57 seconds (57,000,000 µs)
 const unsigned long UPDATE_INTERVAL = 60000; // 60 seconds between updates
 const unsigned long UPDATE_DURATION = 5000; // 5 seconds for update to complete
 

@@ -131,7 +131,7 @@ void drawTransport(TFT_eSprite& sprite, const Transport& transport, int yPos) {
     Serial.println("Connection: " + transport.category + transport.number);
     Serial.println("To: " + transport.destination);
     Serial.println("Departure: " + transport.departure);
-    Serial.println("Delay: " + transport.departure);
+    Serial.println("Delay: " + transport.delay);
     Serial.println("----------------------------");
 
     sprite.setTextColor(TFT_WHITE, TFT_BLUE);
