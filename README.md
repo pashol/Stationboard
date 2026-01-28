@@ -1,6 +1,8 @@
 # StationBoard
 
-Swiss Public Transport Display for Home | CHF 30
+Swiss Public Transport Display for Home
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/H2H21VNZU)
 
 Never miss your train again! This WiFi-enabled real-time display shows departures from two stations of your choice. Perfect for commuters:
 
