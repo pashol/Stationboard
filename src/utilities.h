@@ -26,7 +26,17 @@ void saveConfiguration();
 void saveConfigCallback();
 void displayStatus(bool isSuccess);
 void startConfigPortal();
+void drawPortalIndicator();
 void switchStation();
+
+// Night mode functions
+bool isNightModeActive();
+bool isWeekend();
+void checkNightMode();
+void enterNightMode();
+void exitNightMode();
+void handleNightModeButton();
+void updateNightModeDisplay();
 
 // Constants
 extern const char* DAYS[];

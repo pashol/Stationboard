@@ -1,6 +1,8 @@
 #include "utilities.h"
 #include "globals.h"
 #include "stationboard.h"
+#include "nightmode.h"
+#include "networking.h"
 #include <WiFiManager.h>
 #include <FS.h>
 #include <SPIFFS.h>
@@ -160,9 +162,14 @@ void updateBrightness() {
 }
 
 void cycleBrightness() {
-    // Normal brightness cycling
-    currentBrightnessIndex = (currentBrightnessIndex + 1) % NUM_LEVELS;
-    updateBrightness();
+    if (inNightMode) {
+        // During night mode, button click triggers temporary wake
+        handleNightModeButton();
+    } else {
+        // Normal brightness cycling
+        currentBrightnessIndex = (currentBrightnessIndex + 1) % NUM_LEVELS;
+        updateBrightness();
+    }
 }
 
 void debugInfo() {
@@ -195,6 +202,13 @@ void loadConfiguration() {
                 config.limit = doc["limit"].as<int>();
                 config.offset = doc["offset"].as<int>();
                 config.defaultBrightness = doc["defaultBrightness"].as<int>();
+                // Night mode settings
+                config.nightModeEnabled = doc["nightModeEnabled"] | false;
+                config.nightModeStartHour = doc["nightModeStartHour"] | 22;
+                config.nightModeStartMinute = doc["nightModeStartMinute"] | 0;
+                config.nightModeEndHour = doc["nightModeEndHour"] | 7;
+                config.nightModeEndMinute = doc["nightModeEndMinute"] | 0;
+                config.nightModeWeekendDisable = doc["nightModeWeekendDisable"] | false;
             }
             configFile.close();
         } else {
@@ -210,6 +224,13 @@ void saveConfiguration() {
     doc["limit"] = config.limit;
     doc["offset"] = config.offset;
     doc["defaultBrightness"] = config.defaultBrightness;
+    // Night mode settings
+    doc["nightModeEnabled"] = config.nightModeEnabled;
+    doc["nightModeStartHour"] = config.nightModeStartHour;
+    doc["nightModeStartMinute"] = config.nightModeStartMinute;
+    doc["nightModeEndHour"] = config.nightModeEndHour;
+    doc["nightModeEndMinute"] = config.nightModeEndMinute;
+    doc["nightModeWeekendDisable"] = config.nightModeWeekendDisable;
 
     File configFile = SPIFFS.open("/config.json", FILE_WRITE);
     if (!configFile) {
@@ -245,7 +266,41 @@ void saveConfigCallback() {
     shouldSaveConfig = true;
 }
 
+void drawPortalIndicator() {
+    // Save current text datum
+    uint8_t oldDatum = tft.getTextDatum();
+
+    // Clear blue area only (leave white footer intact)
+    tft.fillRect(0, 0, tft.width(), tft.height() - 25, TFT_BLUE);
+
+    tft.loadFont(AA_FONT_SMALL);
+    tft.setTextColor(TFT_WHITE, TFT_BLUE);
+    tft.setTextDatum(MC_DATUM);  // Middle center alignment
+
+    // Center of blue area
+    int centerY = (tft.height() - 25) / 2;
+
+    tft.drawString("CONFIG PORTAL ACTIVE", tft.width() / 2, centerY - 20);
+    tft.drawString("http://" + WiFi.localIP().toString(), tft.width() / 2, centerY);
+    tft.drawString("Triple-click to stop", tft.width() / 2, centerY + 20);
+
+    // Restore text datum
+    tft.setTextDatum(oldDatum);
+}
+
 void startConfigPortal() {
+    // Config portal is disabled during night mode (when display is dark)
+    if (inNightMode && !temporaryNightWake) {
+        Serial.println("Config portal disabled during night mode");
+        return;
+    }
+
+    // Extend temporary wake if in night mode
+    if (inNightMode && temporaryNightWake) {
+        nightWakeStartTime = millis();
+        Serial.println("Extended night wake");
+    }
+
     int numClicks = button.getNumberClicks();
     if (numClicks == 3) {  // Triple click
         Serial.println("Triple click detected");
@@ -254,16 +309,34 @@ void startConfigPortal() {
             Serial.printf("Config portal started at: http://%s\n", WiFi.localIP().toString().c_str());
             wm.startWebPortal();
             portalRunning = true;
+            drawPortalIndicator();
           }
           else{
             Serial.println("Stopping Portal");
             wm.stopWebPortal();
             portalRunning = false;
+            // Restore normal display
+            tft.fillScreen(TFT_BLUE);
+            tft.fillRect(0, tft.height() - 25 , tft.width(), 25, TFT_WHITE);
+            drawCurrentTime();
+            drawStationboard();
+            drawBTC();
           }
     }
 }
 
 void switchStation() {
+    if (inNightMode && !temporaryNightWake) {
+        // During night mode without temporary wake, do nothing
+        return;
+    }
+    
+    // Extend temporary wake if in night mode
+    if (inNightMode && temporaryNightWake) {
+        nightWakeStartTime = millis();
+        Serial.println("Extended night wake");
+    }
+    
     isFirstStation = !isFirstStation;
     Serial.println(isFirstStation ? "Switched to first station" : "Switched to second station");
     drawStationboard(); // Redraw the stationboard with the new station, force refresh
@@ -276,4 +349,109 @@ void displayStatus(bool isSuccess) {
     // Draw the circle in green or red based on status
     tft.fillCircle(tft.width() - 13, tft.height() - 13, 3, 
                    isSuccess ? TFT_GREEN : TFT_RED);
+}
+
+// Night mode helper functions
+bool isWeekend() {
+    time_t utc = timeClient.getEpochTime();
+    time_t local = euCET.toLocal(utc);
+    int dayOfWeek = weekday(local); // 1 = Sunday, 7 = Saturday
+    return (dayOfWeek == 1 || dayOfWeek == 7);
+}
+
+bool isNightModeActive() {
+    if (!config.nightModeEnabled) return false;
+    
+    // Check if weekend should disable night mode
+    if (config.nightModeWeekendDisable && isWeekend()) {
+        return false;
+    }
+    
+    time_t utc = timeClient.getEpochTime();
+    time_t local = euCET.toLocal(utc);
+    int currentHour = hour(local);
+    int currentMinute = minute(local);
+    int currentTime = currentHour * 60 + currentMinute;
+    
+    int startTime = config.nightModeStartHour * 60 + config.nightModeStartMinute;
+    int endTime = config.nightModeEndHour * 60 + config.nightModeEndMinute;
+    
+    if (startTime < endTime) {
+        // Normal case: e.g., 22:00 to 23:00 (same day)
+        return (currentTime >= startTime && currentTime < endTime);
+    } else {
+        // Crosses midnight: e.g., 22:00 to 07:00
+        return (currentTime >= startTime || currentTime < endTime);
+    }
+}
+
+void enterNightMode() {
+    if (inNightMode) return;
+    
+    Serial.println("Entering night mode");
+    inNightMode = true;
+    temporaryNightWake = false;
+    
+    // Turn off display
+    ledcWrite(PWM_CHANNEL, 0);
+    
+    // Clear screen to black
+    tft.fillScreen(TFT_BLACK);
+}
+
+void exitNightMode() {
+    if (!inNightMode) return;
+    
+    Serial.println("Exiting night mode");
+    inNightMode = false;
+    temporaryNightWake = false;
+    
+    // Restore brightness
+    updateBrightness();
+    
+    // Redraw screen
+    tft.fillScreen(TFT_BLUE);
+    tft.fillRect(0, tft.height() - 25 , tft.width(), 25, TFT_WHITE);
+}
+
+void handleNightModeButton() {
+    if (!inNightMode) return;
+    
+    // Wake up temporarily
+    temporaryNightWake = true;
+    nightWakeStartTime = millis();
+    
+    // Restore brightness temporarily
+    updateBrightness();
+    
+    // Redraw screen
+    tft.fillScreen(TFT_BLUE);
+    tft.fillRect(0, tft.height() - 25 , tft.width(), 25, TFT_WHITE);
+    
+    Serial.println("Temporary night wake activated");
+}
+
+void updateNightModeDisplay() {
+    if (!inNightMode || !temporaryNightWake) return;
+    
+    // Check if temporary wake duration has expired
+    if (millis() - nightWakeStartTime >= NIGHT_WAKE_DURATION) {
+        temporaryNightWake = false;
+        
+        // Turn off display again
+        ledcWrite(PWM_CHANNEL, 0);
+        tft.fillScreen(TFT_BLACK);
+        
+        Serial.println("Temporary night wake ended");
+    }
+}
+
+void checkNightMode() {
+    bool shouldBeInNightMode = isNightModeActive();
+    
+    if (shouldBeInNightMode && !inNightMode) {
+        enterNightMode();
+    } else if (!shouldBeInNightMode && inNightMode) {
+        exitNightMode();
+    }
 }

@@ -1,5 +1,6 @@
 #include "ota.h"
 #include "globals.h"
+#include "nightmode.h"
 #include <WiFi.h>
 
 int ota_progress_millis = 0;
@@ -26,6 +27,12 @@ void onOTAEnd(bool success) {
 }
 
 void handleLongPress() {
+    // OTA is disabled during night mode
+    if (inNightMode) {
+        Serial.println("OTA disabled during night mode");
+        return;
+    }
+    
     if (!otaMode) {
         setCpuFrequencyMhz(240);
         otaMode = true;

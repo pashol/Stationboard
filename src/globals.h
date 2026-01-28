@@ -15,6 +15,13 @@ struct Config {
     int limit = 8;
     int offset = 0;
     int defaultBrightness = 4;
+    // Night mode settings
+    bool nightModeEnabled = false;
+    int nightModeStartHour = 22;
+    int nightModeStartMinute = 0;
+    int nightModeEndHour = 7;
+    int nightModeEndMinute = 0;
+    bool nightModeWeekendDisable = false;
 };
 
 extern Config config;
@@ -60,6 +67,13 @@ extern const int BACKLIGHT_PIN;
 // Time management
 extern unsigned long temporaryOnStart;
 extern const unsigned long TEMP_ON_DURATION;
+
+// Night mode state
+extern bool inNightMode;
+extern bool temporaryNightWake;
+extern unsigned long nightWakeStartTime;
+extern const unsigned long NIGHT_WAKE_DURATION;
+extern const unsigned long NIGHT_CHECK_INTERVAL;
 
 // Loop refresh cycle
 extern unsigned long previousMillis;

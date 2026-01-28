@@ -60,6 +60,29 @@ void setupWiFiManager() {
     wm.addParameter(&custom_offset);
     wm.addParameter(&custom_brightness);
 
+    // Night mode section header
+    const char* nightModeHTML = ""
+        "<br/><hr/><br/>"
+        "<h3>Night Mode Settings</h3>"
+        "<p>Automatically turn off display during night hours to save power and reduce light pollution.</p>";
+    WiFiManagerParameter custom_nightmode_html(nightModeHTML);
+    wm.addParameter(&custom_nightmode_html);
+
+    // Night mode parameters
+    WiFiManagerParameter custom_nightmode_enabled("nightModeEnabled", "Enable Night Mode (0 or 1)", String(config.nightModeEnabled ? "1" : "0").c_str(), 1);
+    WiFiManagerParameter custom_nightmode_start_hour("nightModeStartHour", "Start Hour (0-23)", String(config.nightModeStartHour).c_str(), 2);
+    WiFiManagerParameter custom_nightmode_start_min("nightModeStartMinute", "Start Minute (0-59)", String(config.nightModeStartMinute).c_str(), 2);
+    WiFiManagerParameter custom_nightmode_end_hour("nightModeEndHour", "End Hour (0-23)", String(config.nightModeEndHour).c_str(), 2);
+    WiFiManagerParameter custom_nightmode_end_min("nightModeEndMinute", "End Minute (0-59)", String(config.nightModeEndMinute).c_str(), 2);
+    WiFiManagerParameter custom_nightmode_weekend("nightModeWeekendDisable", "Disable on weekends (0 or 1)", String(config.nightModeWeekendDisable ? "1" : "0").c_str(), 1);
+    
+    wm.addParameter(&custom_nightmode_enabled);
+    wm.addParameter(&custom_nightmode_start_hour);
+    wm.addParameter(&custom_nightmode_start_min);
+    wm.addParameter(&custom_nightmode_end_hour);
+    wm.addParameter(&custom_nightmode_end_min);
+    wm.addParameter(&custom_nightmode_weekend);
+
     // Customize the configuration portal
     wm.setTitle("Stationboard Setup");
 
@@ -96,6 +119,14 @@ void setupWiFiManager() {
     config.limit = String(custom_limit.getValue()).toInt();
     config.offset = String(custom_offset.getValue()).toInt();
     config.defaultBrightness = String(custom_brightness.getValue()).toInt();
+    
+    // Night mode parameters
+    config.nightModeEnabled = String(custom_nightmode_enabled.getValue()).toInt() != 0;
+    config.nightModeStartHour = String(custom_nightmode_start_hour.getValue()).toInt();
+    config.nightModeStartMinute = String(custom_nightmode_start_min.getValue()).toInt();
+    config.nightModeEndHour = String(custom_nightmode_end_hour.getValue()).toInt();
+    config.nightModeEndMinute = String(custom_nightmode_end_min.getValue()).toInt();
+    config.nightModeWeekendDisable = String(custom_nightmode_weekend.getValue()).toInt() != 0;
 
     // Save the custom parameters to config
     if (shouldSaveConfig) {

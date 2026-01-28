@@ -6,15 +6,19 @@
 #include "utilities.h"
 #include "stationboard.h"
 #include "ota.h"
+#include "nightmode.h"
 
 #define BUTTON_SLEEP GPIO_NUM_0  // Boot Button
 
 void lightSleep() {
     Serial.println("Preparing for sleep...");
     
-    if (currentBrightnessIndex > 3 ) {
+    // Determine sleep duration based on night mode
+    unsigned long sleepDuration = inNightMode ? NIGHT_CHECK_INTERVAL * 1000ULL : SLEEP_DURATION;
+    
+    if (currentBrightnessIndex > 3 || inNightMode) {
         // Configure wake-up sources
-        esp_sleep_enable_timer_wakeup(SLEEP_DURATION);
+        esp_sleep_enable_timer_wakeup(sleepDuration);
         esp_sleep_enable_ext0_wakeup(BUTTON_SLEEP, 0);
         esp_sleep_enable_wifi_wakeup();
         
@@ -127,24 +131,43 @@ void loop() {
     static unsigned long updateStartTime = 0;
     static bool isUpdating = false;
     
+    // Check night mode state (handles entering/exiting night mode based on time)
+    checkNightMode();
+    
+    // Update night mode display (checks if temporary wake should end)
+    updateNightModeDisplay();
+    
     if(portalRunning){
         wm.process();
     }
 
-    handleOTA();
+    // OTA is disabled during night mode
+    if (!inNightMode) {
+        handleOTA();
+    }
 
     if (!otaMode) {
-        if (!isUpdating && currentMillis - lastUpdate >= UPDATE_INTERVAL) {
+        // Determine update interval based on night mode
+        unsigned long currentInterval = inNightMode ? NIGHT_CHECK_INTERVAL : UPDATE_INTERVAL;
+        
+        if (!isUpdating && currentMillis - lastUpdate >= currentInterval) {
             if (getCpuFrequencyMhz() != 240) setCpuFrequencyMhz(240); // Set CPU frequency to 240MHz
 
             reconnectWiFi();
 
             if (WiFi.status() == WL_CONNECTED) {
+                // Always update time
                 drawCurrentTime();
-                drawStationboard();
-                drawBTC();
-                debugInfo();
-                Serial.println("============ End of refresh cycle ==================");
+
+                // Only update stationboard and BTC if not in night mode or during temporary wake
+                // AND if config portal is not running
+                if ((!inNightMode || temporaryNightWake) && !portalRunning) {
+                    drawStationboard();
+                    drawBTC();
+                    debugInfo();
+                    Serial.println("============ End of refresh cycle ==================");
+                }
+
                 updateStartTime = currentMillis;
                 isUpdating = true;
             } else {
@@ -154,7 +177,9 @@ void loop() {
         
         // Check if update display time is over
         if (isUpdating && currentMillis - updateStartTime >= UPDATE_DURATION) {
-            lightSleep();
+            if (!portalRunning) {
+                lightSleep();
+            }
             lastUpdate = currentMillis;
             isUpdating = false;
         }
