@@ -128,11 +128,23 @@ void drawTransport(TFT_eSprite& sprite, const Transport& transport, int yPos) {
     const char* NIGHT[] = {"N", "SN"};
     if (transport.name == "null") return;
 
-    Serial.println("Connection: " + transport.category + transport.number);
-    Serial.println("To: " + transport.destination);
-    Serial.println("Departure: " + transport.departure);
-    Serial.println("Delay: " + transport.delay);
-    Serial.println("----------------------------");
+    // Format table row - content widths must match borders
+    String line = transport.category + transport.number;
+    line.trim();
+    if (line.length() > 6) line = line.substring(0, 6);
+    while (line.length() < 6) line += " ";
+    
+    String dest = transport.destination;
+    if (dest.length() > 25) dest = dest.substring(0, 22) + "...";
+    while (dest.length() < 25) dest += " ";
+    
+    String timeStr = transport.departure;
+    while (timeStr.length() < 5) timeStr += " ";
+    
+    String delayStr = transport.delay.toInt() > 0 ? "+" + transport.delay : " ";
+    while (delayStr.length() < 4) delayStr += " ";
+    
+    Serial.println("| " + line + " | " + dest + " | " + timeStr + " |" + delayStr + " |");
 
     sprite.setTextColor(TFT_WHITE, TFT_BLUE);
     sprite.drawString(transport.departure, POS_TIME, yPos + 1);
@@ -173,6 +185,11 @@ void displayTransports(const std::vector<Transport>& transports) {
     std::copy_if(transports.begin(), transports.end(), std::back_inserter(validTransports),
         [](const Transport& t) { return t.name != "null"; });
 
+    // Print table header
+    Serial.println("+--------+---------------------------+-------+------+");
+    Serial.println("| Line   | Destination               | Time  |Delay |");
+    Serial.println("+--------+---------------------------+-------+------+");
+
     TFT_eSprite sprite(&tft);
     sprite.setColorDepth(8);
     sprite.createSprite(tft.width(), 5 * POS_INC);
@@ -191,6 +208,10 @@ void displayTransports(const std::vector<Transport>& transports) {
         drawTransport(sprite, validTransports[i], (i-5) * POS_INC);
     }
     sprite.pushSprite(0, POS_FIRST + (5 * POS_INC));
+
+    // Print table footer
+    Serial.println("+--------+---------------------------+-------+------+");
+    Serial.println();
 }
 
 void drawStation(const String& station) {
