@@ -74,6 +74,7 @@ extern bool temporaryNightWake;
 extern unsigned long nightWakeStartTime;
 extern const unsigned long NIGHT_WAKE_DURATION;
 extern const unsigned long NIGHT_CHECK_INTERVAL;
+extern bool forceRefresh;
 
 // Loop refresh cycle
 extern unsigned long previousMillis;
@@ -88,6 +89,7 @@ extern WiFiUDP ntpUDP;
 
 // Function declarations
 void displayStatus(bool isSuccess);
+void lightSleep();
 void checkForConfigReset();
 void loadConfiguration();
 void saveConfiguration();

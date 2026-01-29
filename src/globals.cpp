@@ -36,6 +36,7 @@ bool temporaryNightWake = false;
 unsigned long nightWakeStartTime = 0;
 const unsigned long NIGHT_WAKE_DURATION = 30000; // 30 seconds
 const unsigned long NIGHT_CHECK_INTERVAL = 300000; // 5 minutes
+bool forceRefresh = false;
 
 unsigned long previousMillis = 0;
 const unsigned long SLEEP_DURATION = 57000000;    // 57 seconds (57,000,000 µs)

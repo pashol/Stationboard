@@ -2,6 +2,7 @@
 #include "globals.h"
 #include "stationboard.h"
 #include "nightmode.h"
+#include "utilities.h"
 #include "networking.h"
 #include <WiFiManager.h>
 #include <FS.h>
@@ -408,6 +409,9 @@ void exitNightMode() {
     
     // Restore brightness
     updateBrightness();
+
+    // Force immediate refresh on next loop
+    forceRefresh = true;
     
     // Redraw screen
     tft.fillScreen(TFT_BLUE);
@@ -423,6 +427,9 @@ void handleNightModeButton() {
     
     // Restore brightness temporarily
     updateBrightness();
+
+    // Force immediate refresh on next loop
+    forceRefresh = true;
     
     // Redraw screen
     tft.fillScreen(TFT_BLUE);
@@ -443,6 +450,8 @@ void updateNightModeDisplay() {
         tft.fillScreen(TFT_BLACK);
         
         Serial.println("Temporary night wake ended");
+
+        lightSleep();
     }
 }
 

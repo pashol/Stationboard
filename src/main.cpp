@@ -30,9 +30,20 @@ void lightSleep() {
         // After waking up
         esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
         
+        if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0 && inNightMode) {
+            temporaryNightWake = true;
+            nightWakeStartTime = millis();
+        }
+
         // Restore PWM configuration
         ledcAttachPin(TFT_BL, PWM_CHANNEL);
-        updateBrightness();
+        if (!inNightMode || temporaryNightWake) {
+            Serial.printf("Wake brightness restore: night=%d tempWake=%d\n", inNightMode, temporaryNightWake);
+            updateBrightness();
+        } else {
+            Serial.printf("Wake keep dark: night=%d tempWake=%d\n", inNightMode, temporaryNightWake);
+            ledcWrite(PWM_CHANNEL, 0);
+        }
         
         if(wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) {
             Serial.println("Woken up by button");
@@ -150,18 +161,20 @@ void loop() {
         // Determine update interval based on night mode
         unsigned long currentInterval = inNightMode ? NIGHT_CHECK_INTERVAL : UPDATE_INTERVAL;
         
-        if (!isUpdating && currentMillis - lastUpdate >= currentInterval) {
+        if (forceRefresh || (!isUpdating && currentMillis - lastUpdate >= currentInterval)) {
             if (getCpuFrequencyMhz() != 240) setCpuFrequencyMhz(240); // Set CPU frequency to 240MHz
 
             reconnectWiFi();
 
             if (WiFi.status() == WL_CONNECTED) {
-                // Always update time
-                drawCurrentTime();
+                // Update time only when display is allowed to render
+                if (!inNightMode || temporaryNightWake || forceRefresh) {
+                    drawCurrentTime();
+                }
 
                 // Only update stationboard and BTC if not in night mode or during temporary wake
                 // AND if config portal is not running
-                if ((!inNightMode || temporaryNightWake) && !portalRunning) {
+                if ((!inNightMode || temporaryNightWake || forceRefresh) && !portalRunning) {
                     drawStationboard();
                     drawBTC();
                     debugInfo();
@@ -170,14 +183,16 @@ void loop() {
 
                 updateStartTime = currentMillis;
                 isUpdating = true;
+                forceRefresh = false;
             } else {
                 displayStatus(false);
+                forceRefresh = false;
             }
         }
         
         // Check if update display time is over
         if (isUpdating && currentMillis - updateStartTime >= UPDATE_DURATION) {
-            if (!portalRunning) {
+            if (!portalRunning && !(inNightMode && temporaryNightWake)) {
                 lightSleep();
             }
             lastUpdate = currentMillis;
