@@ -19,6 +19,7 @@ void onConfigPortalStart(WiFiManager* myWiFiManager) {
     tft.loadFont(AA_FONT_SMALL);
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
     tft.setTextDatum(TL_DATUM);
+    tft.drawString("Stationboard v" FIRMWARE_VERSION, 20, 20);
     tft.drawString("WiFi Setup Required", 20, 40);
     tft.drawString("1. Connect phone to WiFi:", 20, 70);
     tft.drawString("   Stationboard_AP", 20, 90);
