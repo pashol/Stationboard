@@ -45,7 +45,7 @@ Bring the train station display to your home or office! Get accurate departure t
 - USB cable for initial flashing
 
 ### Flash 
-Use my [dedicated page](https://stationboard-uploader.vercel.app/)) to flash the files from the release
+Use my [dedicated page](https://stationboard-uploader.vercel.app/) to flash the files.
 
 ## Configuration
 
