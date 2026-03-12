@@ -42,7 +42,8 @@ void setupWiFiManager() {
     // First, create the welcome message as a parameter
     const char* welcomeHTML = ""
         "<div style='text-align:left; padding:15px; margin:10px; background:#666; color:white; border-radius:4px'>"
-        "<h2>Welcome to Stationboard v" FIRMWARE_VERSION " Setup!</h2>"
+        "<h2>Welcome to Stationboard Setup!</h2>"
+        "<p><small>Firmware v" FIRMWARE_VERSION "</small></p>"
         "<p>This device shows real-time public transport departures for Swiss stations.</p>"
         "<p><b>To configure your display:</b></p>"
         "<ol>"
