@@ -50,7 +50,7 @@ void setupWiFiManager() {
         "<li>Enter your WiFi credentials</li>"
         "<li>Set your station ID (doesn't need to be exact)</li>"
         "<li>Configure display preferences</li>"
-        "<li>For firmware updates press button for 10s on main screen</li>"
+        "<li>For firmware updates, press the button for 10 seconds on the main screen</li>"
         "</ol>"
         "<p><b>Need help? Contact:</b></p>"
         "<p>✉️ pascal.holzmann@gmail.com</p>"
