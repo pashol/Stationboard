@@ -28,6 +28,7 @@ void checkForConfigReset() {
     tft.fillScreen(TFT_BLACK);
     tft.loadFont(AA_FONT_SMALL);
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.drawString("Stationboard v" FIRMWARE_VERSION, 20, 60);
     tft.drawString("Press BOOT to reset", 20, 80);
     tft.drawString("Waiting 3 seconds...", 20, 100);
     

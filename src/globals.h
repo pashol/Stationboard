@@ -98,6 +98,9 @@ void switchStation(); // New function to switch between stations
 
 #include <ArduinoJson.h>
 
+// Firmware version
+#define FIRMWARE_VERSION "1.2.2"
+
 // Additional constants
 extern const char* DAYS[];
 extern const char* MONTHS[];
