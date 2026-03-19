@@ -7,7 +7,7 @@ Swiss Public Transport Display for Home
 Never miss your train again! This WiFi-enabled real-time display shows departures from two stations of your choice. Perfect for commuters:
 
 - Setup via smartphone
-- 4 brightness levels
+- 5 brightness levels
 - Energy efficient (<1W)
 - Compact design
 - Live updates of Swiss public transport data
@@ -52,7 +52,7 @@ Use my [dedicated page](https://stationboard-uploader.vercel.app/) to flash the 
 ### Initial Setup
 
 1. Power on the device
-2. If no WiFi is configured, it creates an access point named **"Stationboard-AP"**
+2. If no WiFi is configured, it creates an access point named **"Stationboard-AP"** and displays connection instructions on screen
 3. Connect to this AP with your smartphone
 4. A captive portal opens where you can:
    - Select your WiFi network and enter credentials
