@@ -14,6 +14,19 @@ extern const char* getBTCAPI;
 #define HTTP_CODE_OK 200
 #endif
 
+void onConfigPortalStart(WiFiManager* myWiFiManager) {
+    tft.fillScreen(TFT_BLACK);
+    tft.loadFont(AA_FONT_SMALL);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setTextDatum(TL_DATUM);
+    tft.drawString("Stationboard v" FIRMWARE_VERSION, 20, 20);
+    tft.drawString("WiFi Setup Required", 20, 40);
+    tft.drawString("1. Connect phone to WiFi:", 20, 70);
+    tft.drawString("   Stationboard_AP", 20, 90);
+    tft.drawString("2. Open browser:", 20, 115);
+    tft.drawString("   192.168.4.1", 20, 135);
+}
+
 void setupWiFiManager() {
     // Check for reset trigger first
     Serial.println("Entering reset routine");
@@ -30,13 +43,14 @@ void setupWiFiManager() {
     const char* welcomeHTML = ""
         "<div style='text-align:left; padding:15px; margin:10px; background:#666; color:white; border-radius:4px'>"
         "<h2>Welcome to Stationboard Setup!</h2>"
+        "<p><small>Firmware v" FIRMWARE_VERSION "</small></p>"
         "<p>This device shows real-time public transport departures for Swiss stations.</p>"
         "<p><b>To configure your display:</b></p>"
         "<ol>"
         "<li>Enter your WiFi credentials</li>"
         "<li>Set your station ID (doesn't need to be exact)</li>"
         "<li>Configure display preferences</li>"
-        "<li>For firmware updates press button for 10s on main screen</li>"
+        "<li>For firmware updates, press the button for 10 seconds on the main screen</li>"
         "</ol>"
         "<p><b>Need help? Contact:</b></p>"
         "<p>✉️ pascal.holzmann@gmail.com</p>"
@@ -98,10 +112,11 @@ void setupWiFiManager() {
     // Set configuration portal timeout (optional, in seconds)
     wm.setConfigPortalTimeout(600);
 
+    // Register callback to show instructions when AP portal starts
+    wm.setAPCallback(onConfigPortalStart);
+
     // Start the configuration portal
     if (!wm.autoConnect("Stationboard_AP")) {
-        tft.drawString("To config your Stationboard:", 10, 110);
-        tft.drawString("Connect mobile to 'Stationboard_AP'", 10, 130);
         Serial.println("Failed to connect and hit timeout");
 
         delay(3000);
