@@ -10,19 +10,19 @@ StationBoard is a Swiss public transport real-time departure display running on 
 
 ```bash
 # Build firmware
-pio run
+~/.platformio/penv/Scripts/pio run
 
 # Build and upload to device
-pio run -t upload
+~/.platformio/penv/Scripts/pio run -t upload
 
 # Serial monitor (115200 baud)
-pio device monitor
+~/.platformio/penv/Scripts/pio device monitor
 
 # Clean build
-pio run -t clean
+~/.platformio/penv/Scripts/pio run -t clean
 ```
 
-Platform is pinned to `espressif32@6.6.0` for reproducible builds.
+`pio` is not in PATH — use the full path above. Platform is pinned to `espressif32@6.6.0` for reproducible builds.
 
 ## Architecture
 
@@ -81,3 +81,7 @@ Settings stored in SPIFFS (`/config.json`):
 - `defaultBrightness`: Initial brightness level (0-4)
 
 WiFiManager creates a captive portal named "Stationboard-AP" for initial configuration.
+
+## Releases
+
+Firmware version is defined in `src/globals.h` as `#define FIRMWARE_VERSION "x.y.z"`. GitHub releases use tag `x.y.z` and attach the three bin files from `.pio/build/ESP32-2432S028R/`: `bootloader.bin`, `firmware.bin`, `partitions.bin`.
