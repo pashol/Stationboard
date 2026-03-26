@@ -16,8 +16,6 @@ Easy installation: Just needs WiFi (2.4 GHz) and USB power.
 
 Bring the train station display to your home or office! Get accurate departure times for buses, trains, and boats right where you need them.
 
-![StationBoard Display](img/stationboard.jpg)
-
 ## Features
 
 - **Real-time departures** from Swiss public transport (trains, buses, trams, boats)
@@ -28,6 +26,8 @@ Bring the train station display to your home or office! Get accurate departure t
 - **WiFi configuration portal** - easy setup via smartphone
 - **Automatic time sync** with NTP (handles DST)
 - **Night mode** - automatic power saving from 22:00 to 06:00
+
+![StationBoard Display](img/stationboard.jpg)
 
 ## Hardware Requirements
 
