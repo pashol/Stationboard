@@ -3,13 +3,11 @@
 #include "stationboard.h"
 #include "connections.h"
 #include "nightmode.h"
-#include "utilities.h"
 #include "networking.h"
 #include <WiFiManager.h>
 #include <FS.h>
 #include <SPIFFS.h>
 #include <ArduinoJson.h>
-#include <WiFiManager.h>
 #include <TimeLib.h>
 #include <Timezone.h>
 
@@ -69,22 +67,9 @@ void checkForConfigReset() {
     }
 }
 
-String URLEncode(String msg) {
-    const char *hex = "0123456789ABCDEF";
-    String encodedMsg = "";
-    
-    for (char c : msg) {
-        if (isAlphaNumeric(c) || c == '-' || c == '_' 
-            || c == '.' || c == '~') {
-            encodedMsg += c;
-        } else {
-            encodedMsg += '%';
-            encodedMsg += hex[c >> 4];
-            encodedMsg += hex[c & 0xF];
-        }
-    }
-    return encodedMsg;
-}
+// NOTE (Task 2): URLEncode, validateConfiguration and normalizeConfiguration
+// are defined inline in utilities.h / globals.h so device tests link them
+// without extra translation units. Firmware uses the same definitions.
 
 String getTimeWithoutSeconds() {
     time_t utc = timeClient.getEpochTime();
@@ -143,7 +128,8 @@ void drawCurrentTime() {
 }
 
 String getFormattedTimeRelativeToNow(int minutesOffset) {
-    time_t utc = timeClient.getEpochTime() + (minutesOffset * 60);
+    int64_t offsetSeconds = (int64_t)minutesOffset * 60;
+    time_t utc = (time_t)((int64_t)timeClient.getEpochTime() + offsetSeconds);
     time_t local = euCET.toLocal(utc);
 
     char buffer[20];
@@ -157,6 +143,9 @@ String getFormattedTimeRelativeToNow(int minutesOffset) {
 }
 
 void updateBrightness() {
+    // Defensively constrain the index: it can be set from persisted config
+    // or button handling, so never trust it before indexing the table.
+    currentBrightnessIndex = constrain(currentBrightnessIndex, 0, NUM_LEVELS - 1);
     // Set backlight brightness using LED PWM channel
     ledcWrite(PWM_CHANNEL, BRIGHTNESS_LEVELS[currentBrightnessIndex]);
     
@@ -207,19 +196,30 @@ void loadConfiguration() {
             DeserializationError error = deserializeJson(doc, configFile);
             
             if (!error) {
-                config.stationId = doc["station_id"].as<String>();
-                config.stationId2 = doc["station_id2"].as<String>();
-                config.limit = constrain(doc["limit"] | config.limit, 1, 10);
-                config.offset = doc["offset"].as<int>();
-                config.defaultBrightness = constrain(doc["defaultBrightness"] | config.defaultBrightness, 0, 4);
+                // Parse into a temp copy so a malformed file can never leave
+                // the global config half-updated; keep current values on
+                // invalid fields via normalize + validate before assigning.
+                Config candidate = config;
+                candidate.stationId = doc["station_id"] | candidate.stationId;
+                candidate.stationId2 = doc["station_id2"] | candidate.stationId2;
+                candidate.limit = doc["limit"] | candidate.limit;
+                candidate.offset = doc["offset"] | candidate.offset;
+                candidate.defaultBrightness = doc["defaultBrightness"] | candidate.defaultBrightness;
                 // Night mode settings
-                config.nightModeEnabled = doc["nightModeEnabled"] | false;
-                config.nightModeStartHour = constrain(doc["nightModeStartHour"] | config.nightModeStartHour, 0, 23);
-                config.nightModeStartMinute = constrain(doc["nightModeStartMinute"] | config.nightModeStartMinute, 0, 59);
-                config.nightModeEndHour = constrain(doc["nightModeEndHour"] | config.nightModeEndHour, 0, 23);
-                config.nightModeEndMinute = constrain(doc["nightModeEndMinute"] | config.nightModeEndMinute, 0, 59);
-                config.nightModeWeekendDisable = doc["nightModeWeekendDisable"] | false;
-                config.connectionsEnabled = doc["connectionsEnabled"] | false;
+                candidate.nightModeEnabled = doc["nightModeEnabled"] | candidate.nightModeEnabled;
+                candidate.nightModeStartHour = doc["nightModeStartHour"] | candidate.nightModeStartHour;
+                candidate.nightModeStartMinute = doc["nightModeStartMinute"] | candidate.nightModeStartMinute;
+                candidate.nightModeEndHour = doc["nightModeEndHour"] | candidate.nightModeEndHour;
+                candidate.nightModeEndMinute = doc["nightModeEndMinute"] | candidate.nightModeEndMinute;
+                candidate.nightModeWeekendDisable = doc["nightModeWeekendDisable"] | candidate.nightModeWeekendDisable;
+                candidate.connectionsEnabled = doc["connectionsEnabled"] | candidate.connectionsEnabled;
+                // All-or-nothing gate: a single empty station discards the whole candidate; numerics are clamped by normalize so only empty stations can fail validate here (per-field recovery is Task 4 portal scope).
+                normalizeConfiguration(candidate);
+                if (validateConfiguration(candidate)) {
+                    config = candidate;
+                } else {
+                    Serial.println("Config invalid after normalize - keeping previous values");
+                }
             }
             configFile.close();
         } else {

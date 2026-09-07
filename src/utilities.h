@@ -12,7 +12,30 @@ class File;
 extern NTPClient timeClient;
 
 void checkForConfigReset();
-String URLEncode(String msg);
+// URL-encodes a string byte-wise. Iterates unsigned bytes so UTF-8
+// multibyte sequences encode correctly (a signed char would sign-extend
+// and index the hex table out of bounds). Defined inline here so device
+// tests link it without extra translation units.
+inline String URLEncode(String msg) {
+    const char *hex = "0123456789ABCDEF";
+    String encodedMsg = "";
+
+    for (unsigned char c : msg) {
+        if (isAlphaNumeric(c) || c == '-' || c == '_'
+            || c == '.' || c == '~') {
+            encodedMsg += static_cast<char>(c);
+        } else {
+            encodedMsg += '%';
+            encodedMsg += hex[(c >> 4) & 0x0F];
+            encodedMsg += hex[c & 0x0F];
+        }
+    }
+    return encodedMsg;
+}
+// Single validation path shared by flash load and portal ingress (Task 4).
+struct Config;
+inline bool validateConfiguration(const Config& candidate);
+inline void normalizeConfiguration(Config& candidate);
 String getTimeWithoutSeconds();
 String getFormattedDateTime();
 String getDayOfWeek();

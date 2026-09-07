@@ -94,6 +94,57 @@ constexpr size_t MAX_API_RESPONSE_BYTES = 32768;
 constexpr size_t STATIONBOARD_JSON_CAPACITY = 8192;
 constexpr size_t CONNECTIONS_JSON_CAPACITY = 8192;
 
+// Configuration bounds (Task 2: single validation path for flash + portal ingress)
+// MAX_STATION_LENGTH matches the WiFiManager portal field length for station IDs.
+constexpr size_t MAX_STATION_LENGTH = 150;
+// Maximum absolute stationboard time offset in minutes (API `offset` parameter).
+constexpr int MAX_STATION_OFFSET_MINUTES = 120;
+
+// Single validation path shared by flash load and portal ingress (Task 4).
+// Defined inline here (header-only, like the Task 1 limits) so device tests
+// link without extra translation units; firmware uses the same definitions.
+// validateConfiguration rejects empty station IDs and out-of-range numerics.
+// normalizeConfiguration constrains every numeric into range and disables a
+// zero-length night schedule (start == end) instead of entering it.
+inline bool validateConfiguration(const Config& candidate) {
+    if (candidate.stationId.length() == 0) return false;
+    if (candidate.stationId2.length() == 0) return false;
+    if (candidate.stationId.length() > MAX_STATION_LENGTH) return false;
+    if (candidate.stationId2.length() > MAX_STATION_LENGTH) return false;
+    if (candidate.limit < 1 || candidate.limit > 10) return false;
+    if (candidate.offset < -MAX_STATION_OFFSET_MINUTES ||
+        candidate.offset > MAX_STATION_OFFSET_MINUTES) return false;
+    if (candidate.defaultBrightness < 0 || candidate.defaultBrightness > 4) return false;
+    if (candidate.nightModeStartHour < 0 || candidate.nightModeStartHour > 23) return false;
+    if (candidate.nightModeStartMinute < 0 || candidate.nightModeStartMinute > 59) return false;
+    if (candidate.nightModeEndHour < 0 || candidate.nightModeEndHour > 23) return false;
+    if (candidate.nightModeEndMinute < 0 || candidate.nightModeEndMinute > 59) return false;
+    return true;
+}
+
+inline void normalizeConfiguration(Config& candidate) {
+    candidate.limit = constrain(candidate.limit, 1, 10);
+    candidate.defaultBrightness = constrain(candidate.defaultBrightness, 0, 4);
+    candidate.offset = constrain(candidate.offset,
+                                 -MAX_STATION_OFFSET_MINUTES,
+                                 MAX_STATION_OFFSET_MINUTES);
+    candidate.nightModeStartHour = constrain(candidate.nightModeStartHour, 0, 23);
+    candidate.nightModeStartMinute = constrain(candidate.nightModeStartMinute, 0, 59);
+    candidate.nightModeEndHour = constrain(candidate.nightModeEndHour, 0, 23);
+    candidate.nightModeEndMinute = constrain(candidate.nightModeEndMinute, 0, 59);
+    if (candidate.stationId.length() > MAX_STATION_LENGTH) {
+        candidate.stationId = candidate.stationId.substring(0, MAX_STATION_LENGTH);
+    }
+    if (candidate.stationId2.length() > MAX_STATION_LENGTH) {
+        candidate.stationId2 = candidate.stationId2.substring(0, MAX_STATION_LENGTH);
+    }
+    if (candidate.nightModeEnabled &&
+        candidate.nightModeStartHour == candidate.nightModeEndHour &&
+        candidate.nightModeStartMinute == candidate.nightModeEndMinute) {
+        candidate.nightModeEnabled = false;
+    }
+}
+
 // Objects
 extern OneButton button;
 extern NTPClient timeClient;
