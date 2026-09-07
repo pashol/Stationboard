@@ -6,6 +6,7 @@
 #include "utilities.h"
 #include "networking.h"
 #include "stationboard.h"
+#include "connections.h"
 
 // Test-local definition: pio test links only this TU + libs (src/*.cpp is
 // not linked), so the `config` global referenced by the header-inline
@@ -389,6 +390,167 @@ void test_sb_large_ignored_passlist_succeeds() {
     TEST_ASSERT_EQUAL_STRING("Zurich HB", snap.rows[0].destination.c_str());
 }
 
+// --- Task 6: bounded connections snapshot parser ---
+//
+// parseConnections() is header-inline in connections.h (Task 5 URLEncode
+// precedent) because pio test links only this TU — src/*.cpp is NOT
+// linked — so tests exercise the REAL firmware code path.
+// Contract: true on success (output fully assigned, receivedAt = millis());
+// false on JSON error/overflow with output left UNCHANGED. Walking-only
+// entries (empty/missing products) are SKIPPED, not fatal; a doc of only
+// such entries parses to count 0 success.
+
+static bool parseConnFromString(const String& json, ConnectionsSnapshot& snap) {
+    StringStream stream(json);
+    return parseConnections(stream, snap);
+}
+
+static const char* CONN_VALID_JSON =
+    "{\"connections\":["
+    "{\"from\":{\"departure\":\"2026-09-07T08:14:00+0200\",\"departureTimestamp\":1786073640,\"delay\":2},"
+    "\"to\":{\"arrival\":\"2026-09-07T09:02:00+0200\"},"
+    "\"duration\":\"00d00:48:00\",\"transfers\":1,\"products\":[\"IC 1\"]},"
+    "{\"from\":{\"departure\":\"2026-09-07T08:30:00+0200\",\"departureTimestamp\":1786074600,\"delay\":null},"
+    "\"to\":{\"arrival\":\"2026-09-07T09:38:00+0200\"},"
+    "\"duration\":\"00d01:08:00\",\"transfers\":0,\"products\":[\"S 2\"]}"
+    "]}";
+
+void test_conn_valid_doc_parses() {
+    ConnectionsSnapshot snap;
+    unsigned long before = millis();
+    TEST_ASSERT_TRUE_MESSAGE(parseConnFromString(CONN_VALID_JSON, snap), "valid doc must parse");
+    TEST_ASSERT_EQUAL_UINT(2, snap.count);
+    TEST_ASSERT_EQUAL_STRING("08:14", snap.rows[0].departure.c_str());
+    TEST_ASSERT_EQUAL_STRING("09:02", snap.rows[0].arrival.c_str());
+    TEST_ASSERT_EQUAL_STRING("48m", snap.rows[0].duration.c_str());
+    TEST_ASSERT_EQUAL_STRING("IC 1", snap.rows[0].product.c_str());
+    TEST_ASSERT_EQUAL_INT(1, snap.rows[0].transfers);
+    TEST_ASSERT_EQUAL_INT(2, snap.rows[0].delay);
+    TEST_ASSERT_EQUAL_INT32(1786073640, snap.rows[0].departureTimestamp);
+    TEST_ASSERT_EQUAL_STRING("1h8m", snap.rows[1].duration.c_str());
+    TEST_ASSERT_EQUAL_INT(0, snap.rows[1].delay);
+    TEST_ASSERT_EQUAL_INT32(1786074600, snap.rows[1].departureTimestamp);
+    TEST_ASSERT_TRUE_MESSAGE(snap.receivedAt >= before, "receivedAt must be stamped on success");
+}
+
+static const char* CONN_REORDERED_JSON =
+    "{\"connections\":["
+    "{\"products\":[\"RE 5\"],\"transfers\":2,\"duration\":\"00d00:48:00\","
+    "\"to\":{\"arrival\":\"2026-09-07T09:02:00+0200\"},"
+    "\"from\":{\"delay\":0,\"departureTimestamp\":1786073640,\"departure\":\"2026-09-07T08:14:00+0200\"}}"
+    "]}";
+
+void test_conn_reordered_members_parse() {
+    ConnectionsSnapshot snap;
+    TEST_ASSERT_TRUE_MESSAGE(parseConnFromString(CONN_REORDERED_JSON, snap), "reordered doc must parse");
+    TEST_ASSERT_EQUAL_UINT(1, snap.count);
+    TEST_ASSERT_EQUAL_STRING("08:14", snap.rows[0].departure.c_str());
+    TEST_ASSERT_EQUAL_STRING("RE 5", snap.rows[0].product.c_str());
+    TEST_ASSERT_EQUAL_INT(2, snap.rows[0].transfers);
+}
+
+void test_conn_truncated_fails_and_preserves_output() {
+    String truncated = String(CONN_VALID_JSON).substring(0, 120); // cut mid-document
+    ConnectionsSnapshot snap;
+    snap.count = 1;
+    snap.receivedAt = 12345;
+    snap.rows[0].departure = "KEEP";
+    snap.rows[0].product = "KEEP-P";
+    TEST_ASSERT_FALSE_MESSAGE(parseConnFromString(truncated, snap), "truncated doc must fail");
+    TEST_ASSERT_EQUAL_UINT(1, snap.count);
+    TEST_ASSERT_EQUAL_UINT32(12345, snap.receivedAt);
+    TEST_ASSERT_EQUAL_STRING("KEEP", snap.rows[0].departure.c_str());
+    TEST_ASSERT_EQUAL_STRING("KEEP-P", snap.rows[0].product.c_str());
+}
+
+static const char* CONN_EMPTY_PRODUCTS_JSON =
+    "{\"connections\":["
+    "{\"from\":{\"departure\":\"2026-09-07T08:14:00+0200\",\"departureTimestamp\":1786073640,\"delay\":0},"
+    "\"to\":{\"arrival\":\"2026-09-07T09:02:00+0200\"},"
+    "\"duration\":\"00d00:48:00\",\"transfers\":1,\"products\":[\"IC 1\"]},"
+    "{\"from\":{\"departure\":\"2026-09-07T08:15:00+0200\",\"departureTimestamp\":1786073700,\"delay\":0},"
+    "\"to\":{\"arrival\":\"2026-09-07T08:45:00+0200\"},"
+    "\"duration\":\"00d00:30:00\",\"transfers\":0,\"products\":[]},"
+    "{\"from\":{\"departure\":\"2026-09-07T08:30:00+0200\",\"departureTimestamp\":1786074600,\"delay\":0},"
+    "\"to\":{\"arrival\":\"2026-09-07T09:38:00+0200\"},"
+    "\"duration\":\"00d01:08:00\",\"transfers\":0,\"products\":[\"S 2\"]}"
+    "]}";
+
+void test_conn_empty_products_skipped() {
+    ConnectionsSnapshot snap;
+    TEST_ASSERT_TRUE_MESSAGE(parseConnFromString(CONN_EMPTY_PRODUCTS_JSON, snap), "doc with walking entry must parse");
+    TEST_ASSERT_EQUAL_UINT(2, snap.count);
+    TEST_ASSERT_EQUAL_STRING("IC 1", snap.rows[0].product.c_str());
+    TEST_ASSERT_EQUAL_STRING("S 2", snap.rows[1].product.c_str());
+}
+
+static const char* CONN_NESTED_JSON =
+    "{\"connections\":["
+    "{\"from\":{\"departure\":\"2026-09-07T08:14:00+0200\",\"departureTimestamp\":1786073640,\"delay\":0,"
+    "\"station\":{\"name\":\"FAKE\"},\"location\":{\"name\":\"FAKE\"}},"
+    "\"to\":{\"arrival\":\"2026-09-07T09:02:00+0200\",\"station\":{\"name\":\"FAKE\"}},"
+    "\"duration\":\"00d00:48:00\",\"transfers\":1,\"products\":[\"IC 1\"],"
+    "\"sections\":[{\"journey\":{\"name\":\"FAKE\",\"passList\":[{\"station\":{\"name\":\"FAKE\"}}]}}]"
+    "}]}";
+
+void test_conn_nested_journeys_ignored() {
+    ConnectionsSnapshot snap;
+    TEST_ASSERT_TRUE_MESSAGE(parseConnFromString(CONN_NESTED_JSON, snap), "nested doc must parse");
+    TEST_ASSERT_EQUAL_UINT(1, snap.count);
+    TEST_ASSERT_EQUAL_STRING("08:14", snap.rows[0].departure.c_str());
+    TEST_ASSERT_EQUAL_STRING("09:02", snap.rows[0].arrival.c_str());
+    TEST_ASSERT_EQUAL_STRING("IC 1", snap.rows[0].product.c_str());
+}
+
+static String buildManyConnectionsJson(int n) {
+    String s = "{\"connections\":[";
+    for (int i = 0; i < n; i++) {
+        if (i > 0) s += ",";
+        s += "{\"from\":{\"departure\":\"2026-09-07T08:14:00+0200\",\"departureTimestamp\":1786073640,\"delay\":0},";
+        s += "\"to\":{\"arrival\":\"2026-09-07T09:02:00+0200\"},";
+        s += "\"duration\":\"00d00:48:00\",\"transfers\":0,\"products\":[\"S ";
+        s += String(i);
+        s += "\"]}";
+    }
+    s += "]}";
+    return s;
+}
+
+void test_conn_more_than_eight_capped() {
+    ConnectionsSnapshot snap;
+    TEST_ASSERT_TRUE_MESSAGE(parseConnFromString(buildManyConnectionsJson(10), snap), "10-entry doc must parse");
+    TEST_ASSERT_EQUAL_UINT(MAX_CONNECTIONS, snap.count);
+    TEST_ASSERT_EQUAL_STRING("S 0", snap.rows[0].product.c_str());
+    TEST_ASSERT_EQUAL_STRING("S 7", snap.rows[7].product.c_str());
+}
+
+static const char* CONN_MULTIDAY_JSON =
+    "{\"connections\":["
+    "{\"from\":{\"departure\":\"2026-09-07T08:14:00+0200\",\"departureTimestamp\":1786073640,\"delay\":0},"
+    "\"to\":{\"arrival\":\"2026-09-08T10:44:00+0200\"},"
+    "\"duration\":\"01d02:30:00\",\"transfers\":2,\"products\":[\"EC 1\"]}"
+    "]}";
+
+void test_conn_multiday_duration() {
+    ConnectionsSnapshot snap;
+    TEST_ASSERT_TRUE_MESSAGE(parseConnFromString(CONN_MULTIDAY_JSON, snap), "multi-day doc must parse");
+    TEST_ASSERT_EQUAL_UINT(1, snap.count);
+    TEST_ASSERT_EQUAL_STRING("26h30m", snap.rows[0].duration.c_str());
+}
+
+static const char* CONN_WALKING_ONLY_JSON =
+    "{\"connections\":["
+    "{\"from\":{\"departure\":\"2026-09-07T08:15:00+0200\",\"departureTimestamp\":1786073700,\"delay\":0},"
+    "\"to\":{\"arrival\":\"2026-09-07T08:45:00+0200\"},"
+    "\"duration\":\"00d00:30:00\",\"transfers\":0,\"products\":[]}"
+    "]}";
+
+void test_conn_walking_only_returns_empty_success() {
+    ConnectionsSnapshot snap;
+    TEST_ASSERT_TRUE_MESSAGE(parseConnFromString(CONN_WALKING_ONLY_JSON, snap), "walking-only doc must succeed");
+    TEST_ASSERT_EQUAL_UINT(0, snap.count);
+}
+
 void setup() {
     UNITY_BEGIN();
     RUN_TEST(test_operational_limits_are_bounded);
@@ -404,6 +566,14 @@ void setup() {
     RUN_TEST(test_sb_more_than_ten_entries_capped);
     RUN_TEST(test_sb_unicode_escapes_decoded);
     RUN_TEST(test_sb_large_ignored_passlist_succeeds);
+    RUN_TEST(test_conn_valid_doc_parses);
+    RUN_TEST(test_conn_reordered_members_parse);
+    RUN_TEST(test_conn_truncated_fails_and_preserves_output);
+    RUN_TEST(test_conn_empty_products_skipped);
+    RUN_TEST(test_conn_nested_journeys_ignored);
+    RUN_TEST(test_conn_more_than_eight_capped);
+    RUN_TEST(test_conn_multiday_duration);
+    RUN_TEST(test_conn_walking_only_returns_empty_success);
     bool spiffsReady = SPIFFS.begin(false);
     if (!spiffsReady) { spiffsReady = SPIFFS.begin(true); }
     if (!spiffsReady) {
