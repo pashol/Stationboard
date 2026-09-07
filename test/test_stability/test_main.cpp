@@ -4,11 +4,17 @@
 #include <FS.h>
 #include "globals.h"
 #include "utilities.h"
+#include "networking.h"
 
 // Test-local definition: pio test links only this TU + libs (src/*.cpp is
 // not linked), so the `config` global referenced by the header-inline
 // persistence core is provided here. Firmware links globals.cpp instead.
 Config config;
+
+// Test-local portal owner for the same reason: the firmware's `wm` from
+// globals.cpp is unavailable here. This instance lets the lifetime probe
+// exercise the identical getPortalParameter() lookup.
+WiFiManager wm;
 
 void test_operational_limits_are_bounded() {
     TEST_ASSERT_EQUAL_UINT32(10, MAX_TRANSPORTS);
@@ -166,6 +172,48 @@ void test_double_save_rotates_backup() {
     clearConfigFiles();
 }
 
+// --- Task 4: portal parameter lifetime probe ---
+//
+// pio test links only this TU (networking.cpp is NOT linked), so this probe
+// cannot observe the firmware's own parameter addresses directly. Lookup
+// stability over MULTIPLE params is asserted here; firmware-side stability
+// itself is enforced structurally (anonymous-namespace statics in
+// networking.cpp) and verified at runtime by portalParametersAreStable().
+
+namespace {
+WiFiManagerParameter probeStationParam("station", "Station ID 1", "", 150);
+WiFiManagerParameter probeStation2Param("station2", "Station ID 2", "", 150);
+WiFiManagerParameter probeLimitParam("limit", "Number of Entries", "", 2);
+bool probeParamsRegistered = false;
+}
+
+void test_portal_parameters_have_program_lifetime() {
+    if (!probeParamsRegistered) {
+        TEST_ASSERT_TRUE_MESSAGE(wm.addParameter(&probeStationParam),
+                                 "register station probe param");
+        TEST_ASSERT_TRUE_MESSAGE(wm.addParameter(&probeStation2Param),
+                                 "register station2 probe param");
+        TEST_ASSERT_TRUE_MESSAGE(wm.addParameter(&probeLimitParam),
+                                 "register limit probe param");
+        probeParamsRegistered = true;
+    }
+    const char* ids[3] = {"station", "station2", "limit"};
+    for (int i = 0; i < 3; i++) {
+        WiFiManagerParameter* first = getPortalParameter(ids[i]);
+        WiFiManagerParameter* second = getPortalParameter(ids[i]);
+        TEST_ASSERT_NOT_NULL_MESSAGE(first, "probe param must resolve");
+        TEST_ASSERT_EQUAL_PTR_MESSAGE(first, second,
+                                      "portal param address must be stable across lookups");
+    }
+    TEST_ASSERT_EQUAL_PTR_MESSAGE(getPortalParameter("station"),
+                                  getPortalParameter("station"),
+                                  "station lookup must be repeatable");
+    TEST_ASSERT_TRUE_MESSAGE(getPortalParameter("station") != getPortalParameter("station2"),
+                             "distinct ids must resolve to distinct params");
+    TEST_ASSERT_TRUE_MESSAGE(getPortalParameter("no-such-param") == nullptr,
+                             "unknown id must return nullptr");
+}
+
 void setup() {
     UNITY_BEGIN();
     RUN_TEST(test_operational_limits_are_bounded);
@@ -173,6 +221,7 @@ void setup() {
     RUN_TEST(test_config_rejects_empty_stations);
     RUN_TEST(test_config_clamps_numeric_ranges);
     RUN_TEST(test_equal_night_times_disable_schedule);
+    RUN_TEST(test_portal_parameters_have_program_lifetime);
     bool spiffsReady = SPIFFS.begin(false);
     if (!spiffsReady) { spiffsReady = SPIFFS.begin(true); }
     if (!spiffsReady) {

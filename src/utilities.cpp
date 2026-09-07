@@ -4,6 +4,7 @@
 #include "connections.h"
 #include "nightmode.h"
 #include "networking.h"
+#include "ota.h"  // Task 4: extern bool otaMode for portal/OTA mutual exclusion
 #include <WiFiManager.h>
 #include <FS.h>
 #include <SPIFFS.h>
@@ -222,6 +223,13 @@ void drawPortalIndicator() {
 }
 
 void startConfigPortal() {
+    // Task 4: portal and OTA own port 80 exclusively — refuse the portal
+    // while OTA mode is active (the OTA side in ota.cpp is out of scope).
+    if (otaMode) {
+        Serial.println("Config portal refused: OTA mode active");
+        return;
+    }
+
     // Config portal is disabled during night mode (when display is dark)
     if (nightMode.active && !nightMode.temporaryWake) {
         Serial.println("Config portal disabled during night mode");
@@ -240,6 +248,9 @@ void startConfigPortal() {
         if(!portalRunning){
             Serial.println("Starting Portal");
             Serial.printf("Config portal started at: http://%s\n", WiFi.localIP().toString().c_str());
+            // Task 4: refresh program-lifetime param values from the live
+            // config before the portal serves them.
+            refreshPortalParameters();
             wm.startWebPortal();
             portalRunning = true;
             drawPortalIndicator();
