@@ -5,6 +5,7 @@
 #include "globals.h"
 #include "utilities.h"
 #include "networking.h"
+#include "stationboard.h"
 
 // Test-local definition: pio test links only this TU + libs (src/*.cpp is
 // not linked), so the `config` global referenced by the header-inline
@@ -214,6 +215,180 @@ void test_portal_parameters_have_program_lifetime() {
                              "unknown id must return nullptr");
 }
 
+// --- Task 5: bounded stationboard snapshot parser ---
+//
+// parseStationboard() is header-inline in stationboard.h (URLEncode
+// precedent) because pio test links only this TU — src/*.cpp is NOT
+// linked — so tests exercise the REAL firmware code path.
+// Contract: true on success (output fully assigned, receivedAt = millis());
+// false on JSON error/overflow with output left UNCHANGED. Rows missing
+// required fields (to / stop.departure) are skipped, not fatal.
+
+// Minimal Stream adapter over an in-memory String (avoids depending on
+// StreamString availability in the test core).
+class StringStream : public Stream {
+public:
+    explicit StringStream(const String& s) : data(s), pos(0) {}
+    int available() override { return (int)data.length() - (int)pos; }
+    int read() override {
+        if (pos >= data.length()) return -1;
+        return (unsigned char)data[pos++];
+    }
+    int peek() override {
+        if (pos >= data.length()) return -1;
+        return (unsigned char)data[pos];
+    }
+    size_t write(uint8_t) override { return 0; }
+private:
+    String data;
+    size_t pos;
+};
+
+static bool parseFromString(const String& json, StationboardSnapshot& snap) {
+    StringStream stream(json);
+    return parseStationboard(stream, snap);
+}
+
+static const char* SB_VALID_JSON =
+    "{\"station\":{\"name\":\"Bern\"},\"stationboard\":["
+    "{\"name\":\"IC 1\",\"category\":\"IC\",\"number\":\"1\","
+    "\"to\":\"Zurich HB\","
+    "\"stop\":{\"departure\":\"2026-09-07T12:34:00+0200\",\"delay\":null}},"
+    "{\"name\":\"S 2\",\"category\":\"S\",\"number\":\"2\","
+    "\"to\":\"Thun\","
+    "\"stop\":{\"departure\":\"2026-09-07T12:41:00+0200\",\"delay\":\"3\"}}"
+    "]}";
+
+void test_sb_valid_doc_parses() {
+    StationboardSnapshot snap;
+    unsigned long before = millis();
+    TEST_ASSERT_TRUE_MESSAGE(parseFromString(SB_VALID_JSON, snap), "valid doc must parse");
+    TEST_ASSERT_EQUAL_STRING("Bern", snap.station.c_str());
+    TEST_ASSERT_EQUAL_UINT(2, snap.count);
+    TEST_ASSERT_EQUAL_STRING("Zurich HB", snap.rows[0].destination.c_str());
+    TEST_ASSERT_EQUAL_STRING("12:34", snap.rows[0].departure.c_str());
+    TEST_ASSERT_EQUAL_STRING("IC", snap.rows[0].category.c_str());
+    TEST_ASSERT_EQUAL_STRING("1", snap.rows[0].number.c_str());
+    TEST_ASSERT_EQUAL_STRING("Thun", snap.rows[1].destination.c_str());
+    TEST_ASSERT_EQUAL_STRING("12:41", snap.rows[1].departure.c_str());
+    TEST_ASSERT_EQUAL_STRING("3", snap.rows[1].delay.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(snap.receivedAt >= before, "receivedAt must be stamped on success");
+}
+
+static const char* SB_REORDERED_JSON =
+    "{\"stationboard\":["
+    "{\"to\":\"Thun\","
+    "\"stop\":{\"delay\":\"3\",\"departure\":\"2026-09-07T12:41:00+0200\"},"
+    "\"number\":\"2\",\"category\":\"S\",\"name\":\"S 2\"}"
+    "],\"station\":{\"name\":\"Bern\"}}";
+
+void test_sb_reordered_members_parse() {
+    StationboardSnapshot snap;
+    TEST_ASSERT_TRUE_MESSAGE(parseFromString(SB_REORDERED_JSON, snap), "reordered doc must parse");
+    TEST_ASSERT_EQUAL_STRING("Bern", snap.station.c_str());
+    TEST_ASSERT_EQUAL_UINT(1, snap.count);
+    TEST_ASSERT_EQUAL_STRING("Thun", snap.rows[0].destination.c_str());
+    TEST_ASSERT_EQUAL_STRING("12:41", snap.rows[0].departure.c_str());
+}
+
+static const char* SB_NESTED_JSON =
+    "{\"station\":{\"name\":\"Bern\",\"location\":{\"name\":\"FAKE\",\"to\":\"FAKE\"}},"
+    "\"stationboard\":["
+    "{\"name\":\"IC 1\",\"category\":\"IC\",\"number\":\"1\","
+    "\"to\":\"Zurich HB\",\"passList\":[{\"name\":\"FAKE\",\"to\":\"FAKE\"}],"
+    "\"stop\":{\"departure\":\"2026-09-07T12:34:00+0200\",\"departureTimestamp\":123,"
+    "\"delay\":null,\"platform\":\"FAKE\"}}"
+    "]}";
+
+void test_sb_nested_unrelated_keys_ignored() {
+    StationboardSnapshot snap;
+    TEST_ASSERT_TRUE_MESSAGE(parseFromString(SB_NESTED_JSON, snap), "nested doc must parse");
+    TEST_ASSERT_EQUAL_STRING("Bern", snap.station.c_str());
+    TEST_ASSERT_EQUAL_UINT(1, snap.count);
+    TEST_ASSERT_EQUAL_STRING("Zurich HB", snap.rows[0].destination.c_str());
+    TEST_ASSERT_EQUAL_STRING("12:34", snap.rows[0].departure.c_str());
+}
+
+void test_sb_truncated_fails_and_preserves_output() {
+    String truncated = String(SB_VALID_JSON).substring(0, 120); // cut mid-document
+    StationboardSnapshot snap;
+    snap.station = "SENTINEL";
+    snap.count = 2;
+    snap.receivedAt = 12345;
+    snap.rows[0].destination = "KEEP0";
+    snap.rows[1].destination = "KEEP1";
+    TEST_ASSERT_FALSE_MESSAGE(parseFromString(truncated, snap), "truncated doc must fail");
+    TEST_ASSERT_EQUAL_STRING("SENTINEL", snap.station.c_str());
+    TEST_ASSERT_EQUAL_UINT(2, snap.count);
+    TEST_ASSERT_EQUAL_UINT32(12345, snap.receivedAt);
+    TEST_ASSERT_EQUAL_STRING("KEEP0", snap.rows[0].destination.c_str());
+    TEST_ASSERT_EQUAL_STRING("KEEP1", snap.rows[1].destination.c_str());
+}
+
+static String buildManyEntriesJson(int n) {
+    String s = "{\"station\":{\"name\":\"Bern\"},\"stationboard\":[";
+    for (int i = 0; i < n; i++) {
+        if (i > 0) s += ",";
+        s += "{\"name\":\"S ";
+        s += String(i);
+        s += "\",\"category\":\"S\",\"number\":\"";
+        s += String(i);
+        s += "\",\"to\":\"Dest";
+        s += String(i);
+        s += "\",\"stop\":{\"departure\":\"2026-09-07T12:34:00+0200\",\"delay\":null}}";
+    }
+    s += "]}";
+    return s;
+}
+
+void test_sb_more_than_ten_entries_capped() {
+    StationboardSnapshot snap;
+    TEST_ASSERT_TRUE_MESSAGE(parseFromString(buildManyEntriesJson(12), snap), "12-entry doc must parse");
+    TEST_ASSERT_EQUAL_UINT(MAX_TRANSPORTS, snap.count);
+    TEST_ASSERT_EQUAL_STRING("Dest0", snap.rows[0].destination.c_str());
+    TEST_ASSERT_EQUAL_STRING("Dest9", snap.rows[9].destination.c_str());
+}
+
+static const char* SB_UNICODE_JSON =
+    "{\"station\":{\"name\":\"Z\\u00fcrich HB\"},\"stationboard\":["
+    "{\"name\":\"S 1\",\"category\":\"S\",\"number\":\"1\","
+    "\"to\":\"Z\\u00fcrich HB\","
+    "\"stop\":{\"departure\":\"2026-09-07T12:34:00+0200\",\"delay\":null}}"
+    "]}";
+
+void test_sb_unicode_escapes_decoded() {
+    StationboardSnapshot snap;
+    TEST_ASSERT_TRUE_MESSAGE(parseFromString(SB_UNICODE_JSON, snap), "unicode doc must parse");
+    TEST_ASSERT_EQUAL_STRING("Zürich HB", snap.station.c_str());
+    TEST_ASSERT_EQUAL_STRING("Zürich HB", snap.rows[0].destination.c_str());
+}
+
+static String buildLargePassListJson() {
+    // ~6KB of ignored passList payload: the filter must exclude it so the
+    // 8KB document budget still succeeds.
+    String s = "{\"station\":{\"name\":\"Bern\"},\"stationboard\":["
+               "{\"name\":\"IC 1\",\"category\":\"IC\",\"number\":\"1\","
+               "\"to\":\"Zurich HB\",\"passList\":[";
+    for (int i = 0; i < 150; i++) {
+        if (i > 0) s += ",";
+        s += "{\"station\":{\"name\":\"PaddingStationNumber";
+        s += String(i);
+        s += "WithExtraTextToGrowThePayload\"},\"departure\":\"2026-09-07T12:34:00+0200\"}";
+    }
+    s += "],\"stop\":{\"departure\":\"2026-09-07T12:34:00+0200\",\"delay\":null}}]}";
+    return s;
+}
+
+void test_sb_large_ignored_passlist_succeeds() {
+    String json = buildLargePassListJson();
+    TEST_ASSERT_TRUE_MESSAGE(json.length() > 6000, "fixture must carry a large ignored payload");
+    StationboardSnapshot snap;
+    TEST_ASSERT_TRUE_MESSAGE(parseFromString(json, snap), "large ignored passList must succeed");
+    TEST_ASSERT_EQUAL_STRING("Bern", snap.station.c_str());
+    TEST_ASSERT_EQUAL_UINT(1, snap.count);
+    TEST_ASSERT_EQUAL_STRING("Zurich HB", snap.rows[0].destination.c_str());
+}
+
 void setup() {
     UNITY_BEGIN();
     RUN_TEST(test_operational_limits_are_bounded);
@@ -222,6 +397,13 @@ void setup() {
     RUN_TEST(test_config_clamps_numeric_ranges);
     RUN_TEST(test_equal_night_times_disable_schedule);
     RUN_TEST(test_portal_parameters_have_program_lifetime);
+    RUN_TEST(test_sb_valid_doc_parses);
+    RUN_TEST(test_sb_reordered_members_parse);
+    RUN_TEST(test_sb_nested_unrelated_keys_ignored);
+    RUN_TEST(test_sb_truncated_fails_and_preserves_output);
+    RUN_TEST(test_sb_more_than_ten_entries_capped);
+    RUN_TEST(test_sb_unicode_escapes_decoded);
+    RUN_TEST(test_sb_large_ignored_passlist_succeeds);
     bool spiffsReady = SPIFFS.begin(false);
     if (!spiffsReady) { spiffsReady = SPIFFS.begin(true); }
     if (!spiffsReady) {
