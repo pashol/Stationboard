@@ -77,8 +77,14 @@ void reconnectWiFi() {
 void setup() {
     Serial.begin(115200);
 
-    if (SPIFFS.begin(true)) {
+    // Mount without formatting: a failed mount must never wipe the
+    // filesystem at boot. Formatting happens only in the explicit
+    // boot-button recovery flow (checkForConfigReset).
+    bool fsMounted = SPIFFS.begin(false);
+    if (fsMounted) {
         Serial.println("SPIFFS Mounted");
+    } else {
+        Serial.println("Filesystem mount failed - continuing with defaults (no format)");
     }
 
     // Initialize display
@@ -86,6 +92,12 @@ void setup() {
     tft.setRotation(1);
     tft.fillScreen(TFT_BLACK);
     tft.setTextColor(TFT_WHITE);
+
+    if (!fsMounted) {
+        tft.loadFont(AA_FONT_SMALL);
+        tft.drawString("Filesystem error", 20, 120);
+        tft.drawString("Using defaults", 20, 140);
+    }
 
     // Initialize PWM for backlight
     ledcSetup(PWM_CHANNEL, PWM_FREQ, PWM_RESOLUTION);

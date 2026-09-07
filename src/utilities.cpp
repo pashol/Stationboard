@@ -188,90 +188,11 @@ void debugInfo() {
     Serial.println("Uptime:" + String(millis() / 1000) + "s");
 }
 
-void loadConfiguration() {
-    if (SPIFFS.exists("/config.json")) {
-        File configFile = SPIFFS.open("/config.json", FILE_READ);
-        if (configFile) {
-            DynamicJsonDocument doc(1024);
-            DeserializationError error = deserializeJson(doc, configFile);
-            
-            if (!error) {
-                // Parse into a temp copy so a malformed file can never leave
-                // the global config half-updated; keep current values on
-                // invalid fields via normalize + validate before assigning.
-                Config candidate = config;
-                candidate.stationId = doc["station_id"] | candidate.stationId;
-                candidate.stationId2 = doc["station_id2"] | candidate.stationId2;
-                candidate.limit = doc["limit"] | candidate.limit;
-                candidate.offset = doc["offset"] | candidate.offset;
-                candidate.defaultBrightness = doc["defaultBrightness"] | candidate.defaultBrightness;
-                // Night mode settings
-                candidate.nightModeEnabled = doc["nightModeEnabled"] | candidate.nightModeEnabled;
-                candidate.nightModeStartHour = doc["nightModeStartHour"] | candidate.nightModeStartHour;
-                candidate.nightModeStartMinute = doc["nightModeStartMinute"] | candidate.nightModeStartMinute;
-                candidate.nightModeEndHour = doc["nightModeEndHour"] | candidate.nightModeEndHour;
-                candidate.nightModeEndMinute = doc["nightModeEndMinute"] | candidate.nightModeEndMinute;
-                candidate.nightModeWeekendDisable = doc["nightModeWeekendDisable"] | candidate.nightModeWeekendDisable;
-                candidate.connectionsEnabled = doc["connectionsEnabled"] | candidate.connectionsEnabled;
-                // All-or-nothing gate: a single empty station discards the whole candidate; numerics are clamped by normalize so only empty stations can fail validate here (per-field recovery is Task 4 portal scope).
-                normalizeConfiguration(candidate);
-                if (validateConfiguration(candidate)) {
-                    config = candidate;
-                } else {
-                    Serial.println("Config invalid after normalize - keeping previous values");
-                }
-            }
-            configFile.close();
-        } else {
-            Serial.println("No config found");
-        }
-    }
-}
-
-void saveConfiguration() {
-    DynamicJsonDocument doc(1024);
-    doc["station_id"] = config.stationId;
-    doc["station_id2"] = config.stationId2;
-    doc["limit"] = config.limit;
-    doc["offset"] = config.offset;
-    doc["defaultBrightness"] = config.defaultBrightness;
-    // Night mode settings
-    doc["nightModeEnabled"] = config.nightModeEnabled;
-    doc["nightModeStartHour"] = config.nightModeStartHour;
-    doc["nightModeStartMinute"] = config.nightModeStartMinute;
-    doc["nightModeEndHour"] = config.nightModeEndHour;
-    doc["nightModeEndMinute"] = config.nightModeEndMinute;
-    doc["nightModeWeekendDisable"] = config.nightModeWeekendDisable;
-    doc["connectionsEnabled"] = config.connectionsEnabled;
-
-    File configFile = SPIFFS.open("/config.json", FILE_WRITE);
-    if (!configFile) {
-        Serial.println("- failed to open file for writing");
-        return;
-    }
-
-    serializeJson(doc, Serial);
-    serializeJson(doc, configFile);
-    configFile.close();
-    
-    // Verify the write
-    configFile = SPIFFS.open("/config.json");
-    if (!configFile) {
-        Serial.println("- failed to open file for verification");
-        return;
-    }
-    
-    if (configFile.size() > 0) {
-        Serial.println("- config file verified");
-        Serial.println("Contents:");
-        while(configFile.available()) {
-            Serial.write(configFile.read());
-        }
-    } else {
-        Serial.println("- config file appears empty");
-    }
-    configFile.close();
-}
+// NOTE (Task 3): loadConfiguration, transactional saveConfiguration and
+// their parseValidateConfigFile helper are defined inline in utilities.h so
+// device tests link them without extra translation units. Firmware uses the
+// same definitions. checkForConfigReset below keeps SPIFFS.begin(true): it
+// is the explicit boot-button recovery flow allowed to format.
 
 void saveConfigCallback() {
     Serial.println("Should save config");

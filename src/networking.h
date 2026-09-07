@@ -7,10 +7,10 @@
 #include "globals.h"
 #include "utilities.h"
 
-// Forward declarations
+// Forward declarations (Task 3: load/save return bool so callers can detect failure)
 void checkForConfigReset();
-void loadConfiguration();
-void saveConfiguration();
+bool loadConfiguration();
+bool saveConfiguration();
 void saveConfigCallback();
 void displayStatus(bool isSuccess);
 

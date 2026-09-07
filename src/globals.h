@@ -154,8 +154,8 @@ extern WiFiUDP ntpUDP;
 void displayStatus(bool isSuccess);
 void lightSleep();
 void checkForConfigReset();
-void loadConfiguration();
-void saveConfiguration();
+bool loadConfiguration();
+bool saveConfiguration();
 void saveConfigCallback();
 void switchStation(); // New function to switch between stations
 

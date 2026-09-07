@@ -34,7 +34,7 @@ void setupWiFiManager() {
 
     // Load existing configuration
     Serial.println("Trying to load config from file");
-    loadConfiguration();
+    if (!loadConfiguration()) { Serial.println("Config load failed, using defaults"); }
 
     // Set config save notify callback
     wm.setSaveConfigCallback(saveConfigCallback);
@@ -158,7 +158,7 @@ void setupWiFiManager() {
 
     // Save the custom parameters to config
     if (shouldSaveConfig) {
-        saveConfiguration();
+        if (!saveConfiguration()) Serial.println("Config save failed");
     }
 }
 
