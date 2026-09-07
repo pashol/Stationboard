@@ -21,6 +21,7 @@ String getFormattedTimeRelativeToNow(int minutesOffset);
 void updateBrightness();
 void cycleBrightness();
 void debugInfo();
+void logHeap(const char* phase);
 void loadConfiguration();
 void saveConfiguration();
 void saveConfigCallback();

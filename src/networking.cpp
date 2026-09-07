@@ -97,6 +97,18 @@ void setupWiFiManager() {
     wm.addParameter(&custom_nightmode_end_min);
     wm.addParameter(&custom_nightmode_weekend);
 
+    // Connections mode section
+    const char* connectionsHTML = ""
+        "<br/><hr/><br/>"
+        "<h3>Connections Mode</h3>"
+        "<p>Enable a third display mode showing journeys from Station 1 to Station 2.</p>";
+    WiFiManagerParameter custom_connections_html(connectionsHTML);
+    wm.addParameter(&custom_connections_html);
+
+    WiFiManagerParameter custom_connections("connectionsEnabled", "Enable Connections Mode (0 or 1)",
+        config.connectionsEnabled ? "1" : "0", 1);
+    wm.addParameter(&custom_connections);
+
     // Customize the configuration portal
     wm.setTitle("Stationboard Setup");
 
@@ -142,6 +154,7 @@ void setupWiFiManager() {
     config.nightModeEndHour = String(custom_nightmode_end_hour.getValue()).toInt();
     config.nightModeEndMinute = String(custom_nightmode_end_min.getValue()).toInt();
     config.nightModeWeekendDisable = String(custom_nightmode_weekend.getValue()).toInt() != 0;
+    config.connectionsEnabled = String(custom_connections.getValue()).toInt() != 0;
 
     // Save the custom parameters to config
     if (shouldSaveConfig) {
@@ -167,7 +180,7 @@ void drawBTC() {
         DeserializationError error = deserializeJson(doc, payload);
         
         if (!error && doc.containsKey("data") && doc["data"].containsKey("amount")) {
-            bitcoin_price = doc["data"]["amount"].as<String>().toInt();
+            bitcoin_price = String((int)doc["data"]["amount"].as<float>());
         }
         displayStatus(true);
     } else {

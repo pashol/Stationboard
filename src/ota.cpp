@@ -28,7 +28,7 @@ void onOTAEnd(bool success) {
 
 void handleLongPress() {
     // OTA is disabled during night mode
-    if (inNightMode) {
+    if (nightMode.active) {
         Serial.println("OTA disabled during night mode");
         return;
     }

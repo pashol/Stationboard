@@ -22,10 +22,12 @@ struct Config {
     int nightModeEndHour = 7;
     int nightModeEndMinute = 0;
     bool nightModeWeekendDisable = false;
+    bool connectionsEnabled = false;
 };
 
 extern Config config;
-extern bool isFirstStation; // Track which station is currently displayed
+// 0 = Station 1, 1 = Station 2, 2 = Connections
+extern int displayMode;
 extern TFT_eSPI tft;
 extern WiFiManager wm;
 extern bool shouldSaveConfig;
@@ -69,9 +71,12 @@ extern unsigned long temporaryOnStart;
 extern const unsigned long TEMP_ON_DURATION;
 
 // Night mode state
-extern bool inNightMode;
-extern bool temporaryNightWake;
-extern unsigned long nightWakeStartTime;
+struct NightModeState {
+    bool active = false;
+    bool temporaryWake = false;
+    unsigned long wakeStartTime = 0;
+};
+extern NightModeState nightMode;
 extern const unsigned long NIGHT_WAKE_DURATION;
 extern const unsigned long NIGHT_CHECK_INTERVAL;
 extern bool forceRefresh;
@@ -81,6 +86,13 @@ extern unsigned long previousMillis;
 extern const unsigned long SLEEP_DURATION;
 extern const unsigned long UPDATE_INTERVAL;
 extern const unsigned long UPDATE_DURATION;
+
+// Stability limits (Task 1 baseline: fixed capacities for later bounded work)
+constexpr size_t MAX_TRANSPORTS = 10;
+constexpr size_t MAX_CONNECTIONS = 8;
+constexpr size_t MAX_API_RESPONSE_BYTES = 32768;
+constexpr size_t STATIONBOARD_JSON_CAPACITY = 8192;
+constexpr size_t CONNECTIONS_JSON_CAPACITY = 8192;
 
 // Objects
 extern OneButton button;
@@ -99,7 +111,7 @@ void switchStation(); // New function to switch between stations
 #include <ArduinoJson.h>
 
 // Firmware version
-#define FIRMWARE_VERSION "1.2.2"
+#define FIRMWARE_VERSION "1.3.0"
 
 // Additional constants
 extern const char* DAYS[];

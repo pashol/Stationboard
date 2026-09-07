@@ -1,8 +1,14 @@
 #include "globals.h"
 #include <WiFiUDP.h>
 
+static_assert(MAX_TRANSPORTS == 10, "stability limit");
+static_assert(MAX_CONNECTIONS == 8, "stability limit");
+static_assert(MAX_API_RESPONSE_BYTES == 32768, "stability limit");
+static_assert(STATIONBOARD_JSON_CAPACITY == 8192, "stability limit");
+static_assert(CONNECTIONS_JSON_CAPACITY == 8192, "stability limit");
+
 Config config;
-bool isFirstStation = true; // Start with first station
+int displayMode = 0;
 
 const char* DAYS[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
 const char* MONTHS[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
@@ -31,9 +37,7 @@ unsigned long temporaryOnStart = 0;
 const unsigned long TEMP_ON_DURATION = 300000;
 
 // Night mode state
-bool inNightMode = false;
-bool temporaryNightWake = false;
-unsigned long nightWakeStartTime = 0;
+NightModeState nightMode;
 const unsigned long NIGHT_WAKE_DURATION = 30000; // 30 seconds
 const unsigned long NIGHT_CHECK_INTERVAL = 300000; // 5 minutes
 bool forceRefresh = false;

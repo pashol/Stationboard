@@ -5,6 +5,7 @@
 #include "networking.h"
 #include "utilities.h"
 #include "stationboard.h"
+#include "connections.h"
 #include "ota.h"
 #include "nightmode.h"
 
@@ -14,9 +15,9 @@ void lightSleep() {
     Serial.println("Preparing for sleep...");
     
     // Determine sleep duration based on night mode
-    unsigned long sleepDuration = inNightMode ? NIGHT_CHECK_INTERVAL * 1000ULL : SLEEP_DURATION;
-    
-    if (currentBrightnessIndex > 3 || inNightMode) {
+    unsigned long sleepDuration = nightMode.active ? NIGHT_CHECK_INTERVAL * 1000ULL : SLEEP_DURATION;
+
+    if (currentBrightnessIndex > 3 || nightMode.active) {
         // Configure wake-up sources
         esp_sleep_enable_timer_wakeup(sleepDuration);
         esp_sleep_enable_ext0_wakeup(BUTTON_SLEEP, 0);
@@ -30,18 +31,18 @@ void lightSleep() {
         // After waking up
         esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
         
-        if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0 && inNightMode) {
-            temporaryNightWake = true;
-            nightWakeStartTime = millis();
+        if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0 && nightMode.active) {
+            nightMode.temporaryWake = true;
+            nightMode.wakeStartTime = millis();
         }
 
         // Restore PWM configuration
         ledcAttachPin(TFT_BL, PWM_CHANNEL);
-        if (!inNightMode || temporaryNightWake) {
-            Serial.printf("Wake brightness restore: night=%d tempWake=%d\n", inNightMode, temporaryNightWake);
+        if (!nightMode.active || nightMode.temporaryWake) {
+            Serial.printf("Wake brightness restore: night=%d tempWake=%d\n", nightMode.active, nightMode.temporaryWake);
             updateBrightness();
         } else {
-            Serial.printf("Wake keep dark: night=%d tempWake=%d\n", inNightMode, temporaryNightWake);
+            Serial.printf("Wake keep dark: night=%d tempWake=%d\n", nightMode.active, nightMode.temporaryWake);
             ledcWrite(PWM_CHANNEL, 0);
         }
         
@@ -123,7 +124,11 @@ void setup() {
     // Initial data fetch
     if (WiFi.status() == WL_CONNECTED) {
         drawCurrentTime();
-        drawStationboard();
+        if (displayMode == 2) {
+            fetchAndDrawConnections();
+        } else {
+            drawStationboard();
+        }
         drawBTC();
     }
 
@@ -153,14 +158,14 @@ void loop() {
     }
 
     // OTA is disabled during night mode
-    if (!inNightMode) {
+    if (!nightMode.active) {
         handleOTA();
     }
 
     if (!otaMode) {
         // Determine update interval based on night mode
-        unsigned long currentInterval = inNightMode ? NIGHT_CHECK_INTERVAL : UPDATE_INTERVAL;
-        
+        unsigned long currentInterval = nightMode.active ? NIGHT_CHECK_INTERVAL : UPDATE_INTERVAL;
+
         if (forceRefresh || (!isUpdating && currentMillis - lastUpdate >= currentInterval)) {
             if (getCpuFrequencyMhz() != 240) setCpuFrequencyMhz(240); // Set CPU frequency to 240MHz
 
@@ -168,14 +173,18 @@ void loop() {
 
             if (WiFi.status() == WL_CONNECTED) {
                 // Update time only when display is allowed to render
-                if (!inNightMode || temporaryNightWake || forceRefresh) {
+                if (!nightMode.active || nightMode.temporaryWake || forceRefresh) {
                     drawCurrentTime();
                 }
 
                 // Only update stationboard and BTC if not in night mode or during temporary wake
                 // AND if config portal is not running
-                if ((!inNightMode || temporaryNightWake || forceRefresh) && !portalRunning) {
-                    drawStationboard();
+                if ((!nightMode.active || nightMode.temporaryWake || forceRefresh) && !portalRunning) {
+                    if (displayMode == 2) {
+                        fetchAndDrawConnections();
+                    } else {
+                        drawStationboard();
+                    }
                     drawBTC();
                     debugInfo();
                     Serial.println("============ End of refresh cycle ==================");
@@ -192,7 +201,7 @@ void loop() {
         
         // Check if update display time is over
         if (isUpdating && currentMillis - updateStartTime >= UPDATE_DURATION) {
-            if (!portalRunning && !(inNightMode && temporaryNightWake)) {
+            if (!portalRunning && !(nightMode.active && nightMode.temporaryWake)) {
                 lightSleep();
             }
             lastUpdate = currentMillis;

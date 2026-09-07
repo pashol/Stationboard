@@ -227,7 +227,7 @@ void drawStationboard() {
     HTTPClient http;
     http.setConnectTimeout(HTTP_TIMEOUT);
     
-    String currentStationId = isFirstStation ? config.stationId : config.stationId2;
+    String currentStationId = (displayMode == 0) ? config.stationId : config.stationId2;
     
     String url = "http://transport.opendata.ch/v1/stationboard?id=" + 
                     URLEncode(currentStationId) + "&limit=" + URLEncode(String(config.limit)) +"&datetime=" + URLEncode(getFormattedTimeRelativeToNow(config.offset));

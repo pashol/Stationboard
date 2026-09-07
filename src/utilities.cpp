@@ -1,6 +1,7 @@
 #include "utilities.h"
 #include "globals.h"
 #include "stationboard.h"
+#include "connections.h"
 #include "nightmode.h"
 #include "utilities.h"
 #include "networking.h"
@@ -164,7 +165,7 @@ void updateBrightness() {
 }
 
 void cycleBrightness() {
-    if (inNightMode) {
+    if (nightMode.active) {
         // During night mode, button click triggers temporary wake
         handleNightModeButton();
     } else {
@@ -174,10 +175,17 @@ void cycleBrightness() {
     }
 }
 
+void logHeap(const char* phase) {
+    Serial.printf("Heap[%s]: free=%u largest=%u min=%u\n",
+                  phase,
+                  ESP.getFreeHeap(),
+                  ESP.getMaxAllocHeap(),
+                  ESP.getMinFreeHeap());
+}
+
 void debugInfo() {
     Serial.println("Debug info:");
-    Serial.printf("Free heap: %d bytes\n", ESP.getFreeHeap());
-    Serial.printf("Largest block: %d bytes\n", ESP.getMaxAllocHeap());
+    logHeap("refresh");
     UBaseType_t watermark = uxTaskGetStackHighWaterMark(NULL);
     Serial.printf("Stack watermark: %d bytes\n", watermark);
     Serial.println("RSSI: " + String(WiFi.RSSI()) + "dBm");
@@ -201,16 +209,17 @@ void loadConfiguration() {
             if (!error) {
                 config.stationId = doc["station_id"].as<String>();
                 config.stationId2 = doc["station_id2"].as<String>();
-                config.limit = doc["limit"].as<int>();
+                config.limit = constrain(doc["limit"] | config.limit, 1, 10);
                 config.offset = doc["offset"].as<int>();
-                config.defaultBrightness = doc["defaultBrightness"].as<int>();
+                config.defaultBrightness = constrain(doc["defaultBrightness"] | config.defaultBrightness, 0, 4);
                 // Night mode settings
                 config.nightModeEnabled = doc["nightModeEnabled"] | false;
-                config.nightModeStartHour = doc["nightModeStartHour"] | 22;
-                config.nightModeStartMinute = doc["nightModeStartMinute"] | 0;
-                config.nightModeEndHour = doc["nightModeEndHour"] | 7;
-                config.nightModeEndMinute = doc["nightModeEndMinute"] | 0;
+                config.nightModeStartHour = constrain(doc["nightModeStartHour"] | config.nightModeStartHour, 0, 23);
+                config.nightModeStartMinute = constrain(doc["nightModeStartMinute"] | config.nightModeStartMinute, 0, 59);
+                config.nightModeEndHour = constrain(doc["nightModeEndHour"] | config.nightModeEndHour, 0, 23);
+                config.nightModeEndMinute = constrain(doc["nightModeEndMinute"] | config.nightModeEndMinute, 0, 59);
                 config.nightModeWeekendDisable = doc["nightModeWeekendDisable"] | false;
+                config.connectionsEnabled = doc["connectionsEnabled"] | false;
             }
             configFile.close();
         } else {
@@ -233,6 +242,7 @@ void saveConfiguration() {
     doc["nightModeEndHour"] = config.nightModeEndHour;
     doc["nightModeEndMinute"] = config.nightModeEndMinute;
     doc["nightModeWeekendDisable"] = config.nightModeWeekendDisable;
+    doc["connectionsEnabled"] = config.connectionsEnabled;
 
     File configFile = SPIFFS.open("/config.json", FILE_WRITE);
     if (!configFile) {
@@ -292,14 +302,14 @@ void drawPortalIndicator() {
 
 void startConfigPortal() {
     // Config portal is disabled during night mode (when display is dark)
-    if (inNightMode && !temporaryNightWake) {
+    if (nightMode.active && !nightMode.temporaryWake) {
         Serial.println("Config portal disabled during night mode");
         return;
     }
 
     // Extend temporary wake if in night mode
-    if (inNightMode && temporaryNightWake) {
-        nightWakeStartTime = millis();
+    if (nightMode.active && nightMode.temporaryWake) {
+        nightMode.wakeStartTime = millis();
         Serial.println("Extended night wake");
     }
 
@@ -321,27 +331,32 @@ void startConfigPortal() {
             tft.fillScreen(TFT_BLUE);
             tft.fillRect(0, tft.height() - 25 , tft.width(), 25, TFT_WHITE);
             drawCurrentTime();
-            drawStationboard();
+            if (displayMode == 2) {
+                fetchAndDrawConnections();
+            } else {
+                drawStationboard();
+            }
             drawBTC();
           }
     }
 }
 
 void switchStation() {
-    if (inNightMode && !temporaryNightWake) {
+    if (nightMode.active && !nightMode.temporaryWake) {
         // During night mode without temporary wake, do nothing
         return;
     }
-    
+
     // Extend temporary wake if in night mode
-    if (inNightMode && temporaryNightWake) {
-        nightWakeStartTime = millis();
+    if (nightMode.active && nightMode.temporaryWake) {
+        nightMode.wakeStartTime = millis();
         Serial.println("Extended night wake");
     }
-    
-    isFirstStation = !isFirstStation;
-    Serial.println(isFirstStation ? "Switched to first station" : "Switched to second station");
-    drawStationboard(); // Redraw the stationboard with the new station, force refresh
+
+    int maxModes = config.connectionsEnabled ? 3 : 2;
+    displayMode = (displayMode + 1) % maxModes;
+    Serial.println("Switched to display mode: " + String(displayMode));
+    forceRefresh = true;
 }
 
 void displayStatus(bool isSuccess) {
@@ -388,11 +403,11 @@ bool isNightModeActive() {
 }
 
 void enterNightMode() {
-    if (inNightMode) return;
-    
+    if (nightMode.active) return;
+
     Serial.println("Entering night mode");
-    inNightMode = true;
-    temporaryNightWake = false;
+    nightMode.active = true;
+    nightMode.temporaryWake = false;
     
     // Turn off display
     ledcWrite(PWM_CHANNEL, 0);
@@ -402,11 +417,11 @@ void enterNightMode() {
 }
 
 void exitNightMode() {
-    if (!inNightMode) return;
-    
+    if (!nightMode.active) return;
+
     Serial.println("Exiting night mode");
-    inNightMode = false;
-    temporaryNightWake = false;
+    nightMode.active = false;
+    nightMode.temporaryWake = false;
     
     // Restore brightness
     updateBrightness();
@@ -420,11 +435,11 @@ void exitNightMode() {
 }
 
 void handleNightModeButton() {
-    if (!inNightMode) return;
-    
+    if (!nightMode.active) return;
+
     // Wake up temporarily
-    temporaryNightWake = true;
-    nightWakeStartTime = millis();
+    nightMode.temporaryWake = true;
+    nightMode.wakeStartTime = millis();
     
     // Restore brightness temporarily
     updateBrightness();
@@ -440,11 +455,11 @@ void handleNightModeButton() {
 }
 
 void updateNightModeDisplay() {
-    if (!inNightMode || !temporaryNightWake) return;
-    
+    if (!nightMode.active || !nightMode.temporaryWake) return;
+
     // Check if temporary wake duration has expired
-    if (millis() - nightWakeStartTime >= NIGHT_WAKE_DURATION) {
-        temporaryNightWake = false;
+    if (millis() - nightMode.wakeStartTime >= NIGHT_WAKE_DURATION) {
+        nightMode.temporaryWake = false;
         
         // Turn off display again
         ledcWrite(PWM_CHANNEL, 0);
@@ -458,10 +473,10 @@ void updateNightModeDisplay() {
 
 void checkNightMode() {
     bool shouldBeInNightMode = isNightModeActive();
-    
-    if (shouldBeInNightMode && !inNightMode) {
+
+    if (shouldBeInNightMode && !nightMode.active) {
         enterNightMode();
-    } else if (!shouldBeInNightMode && inNightMode) {
+    } else if (!shouldBeInNightMode && nightMode.active) {
         exitNightMode();
     }
 }
