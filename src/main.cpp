@@ -119,6 +119,11 @@ void serviceWiFiReconnect() {
     if (observeWiFiRecovery(reconnectState, connected)) {
         forceRefresh = true;
     }
+    if (shouldRequestWiFiReconnect(connected, reconnectState, millis())) {
+        Serial.println("WiFi not connected, reconnecting...");
+        WiFi.reconnect();
+        recordReconnectFailure(reconnectState, millis());
+    }
 }
 
 bool updateClock() {
@@ -176,7 +181,7 @@ void setup() {
     pinMode(BUTTON_PIN, INPUT_PULLUP);
 
     // Set up button callbacks
-    button.setClickMs(500); // 500ms for single click
+    button.setClickMs(BUTTON_CLICK_MS);
     button.attachClick(cycleBrightness);
     button.attachDoubleClick(switchStation);
     button.attachMultiClick(startConfigPortal);
@@ -249,7 +254,8 @@ void loop() {
         // Determine update interval based on night mode
         unsigned long currentInterval = nightMode.active ? NIGHT_CHECK_INTERVAL : UPDATE_INTERVAL;
 
-        if (forceRefresh || (!isUpdating && shouldAttemptRefresh(lastUpdate, currentMillis, currentInterval))) {
+        const bool wasForced = forceRefresh;
+        if (!isUpdating && (wasForced || shouldAttemptRefresh(lastUpdate, currentMillis, currentInterval))) {
             if (getCpuFrequencyMhz() != 240) setCpuFrequencyMhz(240); // Set CPU frequency to 240MHz
 
             if (WiFi.status() == WL_CONNECTED) {
@@ -261,18 +267,20 @@ void loop() {
                 // Only update stationboard and BTC if not in night mode or during temporary wake
                 // AND if config portal is not running
                 if ((!nightMode.active || nightMode.temporaryWake || forceRefresh) && !portalRunning) {
-                    refreshCurrentView();
+                    RefreshResult refresh = refreshCurrentView();
                     debugInfo();
                     Serial.println("============ End of refresh cycle ==================");
+                    forceRefresh = shouldRetryForcedRefresh(
+                        wasForced, isTransportFreshResult(refresh.transport));
                 }
 
                 updateStartTime = currentMillis;
                 isUpdating = true;
-                forceRefresh = false;
             } else {
                 displayStatus(false);
                 lastUpdate = currentMillis;
-                forceRefresh = false;
+                updateStartTime = currentMillis;
+                isUpdating = true;
             }
         }
         

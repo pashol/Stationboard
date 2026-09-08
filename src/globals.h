@@ -58,6 +58,7 @@ extern const char* getBTCAPI;
 
 // Button and brightness constants
 #define TRIGGER_PIN 0
+constexpr unsigned long BUTTON_CLICK_MS = 500;
 extern const int BUTTON_PIN;
 extern const int BRIGHTNESS_LEVELS[];
 extern const int NUM_LEVELS;
@@ -162,6 +163,11 @@ inline bool reconnectDue(const ReconnectState& state, unsigned long now) {
            static_cast<long>(now - state.nextAttemptAt) >= 0;
 }
 
+inline bool shouldRequestWiFiReconnect(bool connected, const ReconnectState& state,
+                                       unsigned long now) {
+    return !connected && reconnectDue(state, now);
+}
+
 inline void recordReconnectFailure(ReconnectState& state, unsigned long now) {
     state.nextAttemptAt = now + state.backoffMs;
     state.attemptScheduled = true;
@@ -189,6 +195,10 @@ inline bool observeWiFiRecovery(ReconnectState& state, bool connected) {
 inline bool shouldAttemptRefresh(unsigned long lastAttempt, unsigned long now,
                                  unsigned long interval) {
     return now - lastAttempt >= interval;
+}
+
+inline bool shouldRetryForcedRefresh(bool wasForced, bool transportFresh) {
+    return wasForced && !transportFresh;
 }
 
 // A stationboard snapshot is no longer current after five missed refreshes.

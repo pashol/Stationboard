@@ -34,6 +34,10 @@ void test_operational_limits_are_bounded() {
     TEST_ASSERT_EQUAL_UINT32(8192, CONNECTIONS_JSON_CAPACITY);
 }
 
+void test_button_click_window_allows_reliable_multi_clicks() {
+    TEST_ASSERT_EQUAL_UINT32(500, BUTTON_CLICK_MS);
+}
+
 void test_url_encode_handles_utf8_bytes() {
     TEST_ASSERT_EQUAL_STRING("Z%C3%BCrich%20HB", URLEncode("Zürich HB").c_str());
 }
@@ -103,10 +107,25 @@ void test_reconnect_observer_resets_scheduler_on_recovery() {
     TEST_ASSERT_FALSE(state.attemptScheduled);
 }
 
+void test_offline_reconnect_is_rate_limited() {
+    ReconnectState state;
+    TEST_ASSERT_TRUE(shouldRequestWiFiReconnect(false, state, 1000));
+    recordReconnectFailure(state, 1000);
+    TEST_ASSERT_FALSE(shouldRequestWiFiReconnect(false, state, 1999));
+    TEST_ASSERT_TRUE(shouldRequestWiFiReconnect(false, state, 2000));
+    TEST_ASSERT_FALSE(shouldRequestWiFiReconnect(true, state, 2000));
+}
+
 void test_refresh_attempt_interval_handles_failed_attempts_and_rollover() {
     TEST_ASSERT_FALSE(shouldAttemptRefresh(1000, 1500, 1000));
     TEST_ASSERT_TRUE(shouldAttemptRefresh(1000, 2000, 1000));
     TEST_ASSERT_TRUE(shouldAttemptRefresh(ULONG_MAX - 500, 499, 1000));
+}
+
+void test_failed_forced_refresh_is_retried() {
+    TEST_ASSERT_TRUE(shouldRetryForcedRefresh(true, false));
+    TEST_ASSERT_FALSE(shouldRetryForcedRefresh(true, true));
+    TEST_ASSERT_FALSE(shouldRetryForcedRefresh(false, false));
 }
 
 // --- Task 10: clock validity and fail-safe night scheduling ---
@@ -1146,6 +1165,7 @@ void test_ota_upload_survives_night_mode_boundary() {
 void setup() {
     UNITY_BEGIN();
     RUN_TEST(test_operational_limits_are_bounded);
+    RUN_TEST(test_button_click_window_allows_reliable_multi_clicks);
     RUN_TEST(test_url_encode_handles_utf8_bytes);
     RUN_TEST(test_stationboard_url_requests_only_parsed_fields);
     RUN_TEST(test_config_rejects_empty_stations);
@@ -1153,7 +1173,9 @@ void setup() {
     RUN_TEST(test_equal_night_times_disable_schedule);
     RUN_TEST(test_reconnect_observer_reports_only_offline_to_connected_transition);
     RUN_TEST(test_reconnect_observer_resets_scheduler_on_recovery);
+    RUN_TEST(test_offline_reconnect_is_rate_limited);
     RUN_TEST(test_refresh_attempt_interval_handles_failed_attempts_and_rollover);
+    RUN_TEST(test_failed_forced_refresh_is_retried);
     RUN_TEST(test_plausible_epoch_requires_2024_or_later);
     RUN_TEST(test_failed_clock_sync_keeps_an_invalid_clock_invalid);
     RUN_TEST(test_epoch_timeval_conversion_has_zero_microseconds);
