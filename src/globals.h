@@ -153,6 +153,8 @@ struct ReconnectState {
     unsigned long nextAttemptAt = 0;
     unsigned long backoffMs = WIFI_RETRY_INITIAL_MS;
     bool attemptScheduled = false;
+    bool connectionStateKnown = false;
+    bool wasConnected = false;
 };
 
 inline bool reconnectDue(const ReconnectState& state, unsigned long now) {
@@ -172,6 +174,16 @@ inline void recordReconnectSuccess(ReconnectState& state) {
     state.nextAttemptAt = 0;
     state.backoffMs = WIFI_RETRY_INITIAL_MS;
     state.attemptScheduled = false;
+}
+
+inline bool observeWiFiRecovery(ReconnectState& state, bool connected) {
+    const bool recovered = state.connectionStateKnown && !state.wasConnected && connected;
+    if (connected) {
+        recordReconnectSuccess(state);
+    }
+    state.wasConnected = connected;
+    state.connectionStateKnown = true;
+    return recovered;
 }
 
 inline bool shouldAttemptRefresh(unsigned long lastAttempt, unsigned long now,
