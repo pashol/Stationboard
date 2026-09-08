@@ -7,11 +7,17 @@
 #include "networking.h"
 #include "stationboard.h"
 #include "connections.h"
+#include "http_request.h"
 
 // Test-local definition: pio test links only this TU + libs (src/*.cpp is
 // not linked), so the `config` global referenced by the header-inline
 // persistence core is provided here. Firmware links globals.cpp instead.
 Config config;
+
+// Test-local HTTP_TIMEOUT: defaultLimits() is header-inline and reads the
+// extern connect/inactivity timeout; firmware links globals.cpp instead
+// (Task 7). Value must match globals.cpp (10000ms).
+const unsigned long HTTP_TIMEOUT = 10000;
 
 // Test-local portal owner for the same reason: the firmware's `wm` from
 // globals.cpp is unavailable here. This instance lets the lifetime probe
@@ -240,6 +246,7 @@ public:
         return (unsigned char)data[pos];
     }
     size_t write(uint8_t) override { return 0; }
+    bool eof() const { return pos >= data.length(); }
 private:
     String data;
     size_t pos;
@@ -551,6 +558,272 @@ void test_conn_walking_only_returns_empty_success() {
     TEST_ASSERT_EQUAL_UINT(0, snap.count);
 }
 
+// --- Task 7: bounded HTTP transactions + truthful BTC status ---
+//
+// http_request.h is header-inline (Tasks 5/6 precedent) because pio test
+// links only this TU — src/*.cpp is NOT linked — so tests exercise the
+// REAL firmware code path.
+
+void test_request_limits_defaults() {
+    RequestLimits limits = defaultLimits();
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(MAX_API_RESPONSE_BYTES, limits.maxBytes,
+                                     "byte cap must equal MAX_API_RESPONSE_BYTES");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(HTTP_TIMEOUT, limits.inactivityMs,
+                                     "inactivity must equal HTTP_TIMEOUT");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(HTTP_TOTAL_TIMEOUT, limits.totalMs,
+                                     "total must equal HTTP_TOTAL_TIMEOUT");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(30000, HTTP_TOTAL_TIMEOUT,
+                                     "total timeout must be 30000ms");
+}
+
+void test_bounded_stream_stops_at_max_bytes() {
+    String payload;
+    for (int i = 0; i < 100; i++) payload += (char)('A' + (i % 26));
+    StringStream inner(payload);
+    RequestLimits limits{10, HTTP_TIMEOUT, HTTP_TOTAL_TIMEOUT};
+    BoundedStream bounded(inner, limits);
+    int count = 0;
+    int firstTen[10];
+    while (true) {
+        int c = bounded.read();
+        if (c < 0) break;
+        if (count < 10) firstTen[count] = c;
+        count++;
+    }
+    TEST_ASSERT_EQUAL_INT_MESSAGE(10, count, "100-byte feed with limit 10 must yield 10 bytes");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(-1, bounded.read(), "reads past the cap must return -1");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, bounded.available(), "available() must be 0 past the cap");
+    TEST_ASSERT_TRUE_MESSAGE(bounded.limitReached(), "cap flag must be set");
+    TEST_ASSERT_EQUAL_UINT_MESSAGE(10, bounded.bytesRead(), "byte counter must stop at 10");
+    TEST_ASSERT_EQUAL_INT_MESSAGE('A', firstTen[0], "stream content must pass through unaltered");
+    TEST_ASSERT_EQUAL_INT_MESSAGE('J', firstTen[9], "stream content must pass through unaltered");
+}
+
+void test_bounded_stream_readbytes_stops_at_max_bytes() {
+    StringStream inner("abcdefghijklmnopqrstuvwxyz");
+    RequestLimits limits{10, HTTP_TIMEOUT, HTTP_TOTAL_TIMEOUT};
+    BoundedStream bounded(inner, limits);
+    char received[16] = {};
+
+    size_t count = bounded.readBytes(received, sizeof(received));
+
+    TEST_ASSERT_EQUAL_UINT_MESSAGE(10, count, "readBytes must not exceed the byte cap");
+    TEST_ASSERT_EQUAL_STRING_LEN_MESSAGE("abcdefghij", received, 10,
+                                         "readBytes must preserve the bounded prefix");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, bounded.available(), "available() must be 0 past the cap");
+}
+
+namespace {
+unsigned long boundedTestNow = 0;
+
+unsigned long boundedTestClock() {
+    return boundedTestNow;
+}
+
+void advanceBoundedTestClock() {
+    boundedTestNow++;
+}
+
+class GappedStream : public Stream {
+public:
+    GappedStream(const String& input, int gapsBeforeData)
+        : data(input), gaps(gapsBeforeData), pos(0) {}
+
+    int available() override {
+        return gaps > 0 ? 0 : (int)data.length() - (int)pos;
+    }
+
+    int read() override {
+        if (gaps > 0) {
+            gaps--;
+            return -1;
+        }
+        if (pos >= data.length()) return -1;
+        return (unsigned char)data[pos++];
+    }
+
+    int peek() override {
+        if (gaps > 0 || pos >= data.length()) return -1;
+        return (unsigned char)data[pos];
+    }
+
+    size_t write(uint8_t) override { return 0; }
+    bool eof() const { return gaps == 0 && pos >= data.length(); }
+
+private:
+    String data;
+    int gaps;
+    size_t pos;
+};
+
+bool gappedStreamEof(Stream& stream) {
+    return static_cast<GappedStream&>(stream).eof();
+}
+
+bool stringStreamEof(Stream& stream) {
+    return static_cast<StringStream&>(stream).eof();
+}
+} // namespace
+
+void test_bounded_stream_readbytes_waits_through_packet_gap() {
+    boundedTestNow = 0;
+    GappedStream inner("hello", 2);
+    RequestLimits limits{10, 5, 20};
+    BoundedStream bounded(inner, limits, 0, gappedStreamEof,
+                          boundedTestClock, advanceBoundedTestClock);
+    char received[6] = {};
+
+    size_t count = bounded.readBytes(received, 5);
+
+    TEST_ASSERT_EQUAL_UINT_MESSAGE(5, count, "packet gaps must not truncate bulk reads");
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("hello", received, "bytes after the gap must be read");
+    TEST_ASSERT_FALSE_MESSAGE(bounded.expired(), "short gaps must remain within inactivity budget");
+}
+
+void test_bounded_stream_readbytes_expires_after_inactivity() {
+    boundedTestNow = 0;
+    GappedStream inner("", 100);
+    RequestLimits limits{10, 3, 20};
+    BoundedStream bounded(inner, limits, 0, gappedStreamEof,
+                          boundedTestClock, advanceBoundedTestClock);
+    char received[1] = {};
+
+    TEST_ASSERT_EQUAL_UINT_MESSAGE(0, bounded.readBytes(received, sizeof(received)),
+                                   "no data must be returned after the inactivity deadline");
+    TEST_ASSERT_TRUE_MESSAGE(bounded.expired(), "wrapper must enforce inactivity while polling");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(3, boundedTestNow, "polling must stop exactly at the deadline");
+}
+
+void test_bounded_stream_readbytes_expires_after_total_timeout() {
+    boundedTestNow = 0;
+    GappedStream inner("", 100);
+    RequestLimits limits{10, 20, 3};
+    BoundedStream bounded(inner, limits, 0, gappedStreamEof,
+                          boundedTestClock, advanceBoundedTestClock);
+    char received[1] = {};
+
+    TEST_ASSERT_EQUAL_UINT_MESSAGE(0, bounded.readBytes(received, sizeof(received)),
+                                   "no data must be returned after the total deadline");
+    TEST_ASSERT_TRUE_MESSAGE(bounded.expired(), "wrapper must enforce total timeout while polling");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(3, boundedTestNow, "polling must stop at the total deadline");
+}
+
+void test_bounded_stream_rejects_eof_at_deadline() {
+    boundedTestNow = 3;
+    RequestLimits limits{10, 20, 3};
+    StringStream readInner("");
+    BoundedStream readBounded(readInner, limits, 0, stringStreamEof,
+                              boundedTestClock, advanceBoundedTestClock);
+
+    TEST_ASSERT_EQUAL_INT_MESSAGE(-1, readBounded.read(), "EOF at the deadline must not be accepted");
+    TEST_ASSERT_TRUE_MESSAGE(readBounded.expired(), "deadline must take precedence over EOF");
+    TEST_ASSERT_FALSE_MESSAGE(readBounded.eofReached(), "deadline must not mark EOF reached");
+    TEST_ASSERT_FALSE_MESSAGE(consumeToEnd(readBounded), "draining at the deadline must fail");
+
+    StringStream peekInner("");
+    BoundedStream peekBounded(peekInner, limits, 0, stringStreamEof,
+                              boundedTestClock, advanceBoundedTestClock);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(-1, peekBounded.peek(), "peek must reject EOF at the deadline");
+    TEST_ASSERT_TRUE_MESSAGE(peekBounded.expired(), "peek must preserve the deadline failure");
+    TEST_ASSERT_FALSE_MESSAGE(peekBounded.eofReached(), "peek must not mark EOF at the deadline");
+}
+
+void test_content_length_policy_rejects_known_oversize_body() {
+    RequestLimits limits{10, HTTP_TIMEOUT, HTTP_TOTAL_TIMEOUT};
+    TEST_ASSERT_TRUE_MESSAGE(isContentLengthAllowed(-1, limits), "unknown lengths are stream-capped");
+    TEST_ASSERT_TRUE_MESSAGE(isContentLengthAllowed(10, limits), "the exact cap is allowed");
+    TEST_ASSERT_FALSE_MESSAGE(isContentLengthAllowed(11, limits), "known oversized body must be rejected");
+}
+
+void test_consume_to_end_rejects_tail_that_reaches_cap() {
+    boundedTestNow = 0;
+    StringStream inner("01234567890");
+    RequestLimits limits{10, 5, 20};
+    BoundedStream bounded(inner, limits, 0, stringStreamEof,
+                          boundedTestClock, advanceBoundedTestClock);
+
+    TEST_ASSERT_FALSE_MESSAGE(consumeToEnd(bounded),
+                              "a valid JSON prefix with an oversized tail must fail the drain");
+    TEST_ASSERT_TRUE_MESSAGE(bounded.limitReached(), "drain must report the byte cap");
+    TEST_ASSERT_TRUE_MESSAGE(inner.eof(), "the overflow byte must be observed, not returned");
+}
+
+void test_consume_to_end_accepts_body_exactly_at_cap() {
+    boundedTestNow = 0;
+    StringStream inner("0123456789");
+    RequestLimits limits{10, 5, 20};
+    BoundedStream bounded(inner, limits, 0, stringStreamEof,
+                          boundedTestClock, advanceBoundedTestClock);
+
+    TEST_ASSERT_TRUE_MESSAGE(consumeToEnd(bounded),
+                             "a body exactly at the cap followed by EOF must succeed");
+    TEST_ASSERT_FALSE_MESSAGE(bounded.limitReached(), "clean EOF must not report an overflow");
+}
+
+void test_consume_to_end_zero_cap_accepts_only_empty_body() {
+    boundedTestNow = 0;
+    RequestLimits limits{0, 5, 20};
+    StringStream empty("");
+    StringStream nonEmpty("x");
+    BoundedStream emptyBounded(empty, limits, 0, stringStreamEof,
+                               boundedTestClock, advanceBoundedTestClock);
+    BoundedStream nonEmptyBounded(nonEmpty, limits, 0, stringStreamEof,
+                                  boundedTestClock, advanceBoundedTestClock);
+
+    TEST_ASSERT_TRUE_MESSAGE(consumeToEnd(emptyBounded), "zero cap must accept an empty body");
+    TEST_ASSERT_FALSE_MESSAGE(emptyBounded.limitReached(), "empty body must not overflow zero cap");
+    TEST_ASSERT_FALSE_MESSAGE(consumeToEnd(nonEmptyBounded), "zero cap must reject any body byte");
+    TEST_ASSERT_TRUE_MESSAGE(nonEmptyBounded.limitReached(), "first byte must overflow zero cap");
+}
+
+void test_is_expired_basic() {
+    TEST_ASSERT_TRUE_MESSAGE(isExpired(1000, 1500, 400), "500ms elapsed must exceed 400ms limit");
+    TEST_ASSERT_FALSE_MESSAGE(isExpired(1000, 1200, 400), "200ms elapsed must not exceed 400ms limit");
+    TEST_ASSERT_TRUE_MESSAGE(isExpired(1000, 1400, 400), "exactly-at-limit must count as expired");
+    TEST_ASSERT_FALSE_MESSAGE(isExpired(1000, 1000, 400), "zero elapsed must not expire");
+}
+
+void test_is_expired_wraparound() {
+    // millis() rolls over every ~49.7 days; unsigned subtraction keeps
+    // the math correct across the wrap (start near 2^32, now just past 0).
+    const unsigned long start = 0xFFFFFFF0UL; // 2^32 - 16
+    const unsigned long now = 0x00000005UL;   // 21 ticks later
+    TEST_ASSERT_TRUE_MESSAGE(isExpired(start, now, 20), "21 ticks elapsed must exceed 20 limit");
+    TEST_ASSERT_FALSE_MESSAGE(isExpired(start, now, 30), "21 ticks elapsed must not exceed 30 limit");
+    TEST_ASSERT_TRUE_MESSAGE(isExpired(start, now, 21), "exactly-at-limit across wrap must expire");
+}
+
+void test_btc_verdict() {
+    TEST_ASSERT_TRUE_MESSAGE(btcVerdict(200, true) == FetchResult::Success,
+                             "200 + valid payload must succeed");
+    TEST_ASSERT_TRUE_MESSAGE(btcVerdict(200, false) == FetchResult::ParseError,
+                             "200 + invalid JSON must be a parse failure");
+    TEST_ASSERT_TRUE_MESSAGE(btcVerdict(500, true) == FetchResult::HttpError,
+                             "non-200 must be an HTTP failure");
+    TEST_ASSERT_TRUE_MESSAGE(btcVerdict(500, false) == FetchResult::HttpError,
+                             "non-200 with bad payload must be an HTTP failure");
+    TEST_ASSERT_TRUE_MESSAGE(btcVerdict(-1, false) == FetchResult::HttpError,
+                             "connection failure must be an HTTP failure");
+}
+
+void test_btc_price_parse_valid() {
+    String out;
+    TEST_ASSERT_TRUE_MESSAGE(
+        parseBtcPrice("{\"data\":{\"base\":\"BTC\",\"currency\":\"USD\",\"amount\":\"97123.45\"}}", out),
+        "coinbase spot payload must parse");
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("97123", out.c_str(), "price must truncate to whole dollars");
+}
+
+void test_btc_price_parse_invalid() {
+    String out = "KEEP";
+    TEST_ASSERT_FALSE_MESSAGE(parseBtcPrice("{not json", out), "malformed JSON must fail");
+    TEST_ASSERT_FALSE_MESSAGE(parseBtcPrice("{\"data\":{}}", out), "missing amount must fail");
+    TEST_ASSERT_FALSE_MESSAGE(parseBtcPrice("{\"error\":\"rate limit\"}", out), "error doc must fail");
+    TEST_ASSERT_FALSE_MESSAGE(parseBtcPrice("{\"data\":{\"amount\":\"not-a-price\"}}", out),
+                              "non-numeric amount must fail");
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("KEEP", out.c_str(), "output must be untouched on failure");
+}
+
 void setup() {
     UNITY_BEGIN();
     RUN_TEST(test_operational_limits_are_bounded);
@@ -574,6 +847,22 @@ void setup() {
     RUN_TEST(test_conn_more_than_eight_capped);
     RUN_TEST(test_conn_multiday_duration);
     RUN_TEST(test_conn_walking_only_returns_empty_success);
+    RUN_TEST(test_request_limits_defaults);
+    RUN_TEST(test_bounded_stream_stops_at_max_bytes);
+    RUN_TEST(test_bounded_stream_readbytes_stops_at_max_bytes);
+    RUN_TEST(test_bounded_stream_readbytes_waits_through_packet_gap);
+    RUN_TEST(test_bounded_stream_readbytes_expires_after_inactivity);
+    RUN_TEST(test_bounded_stream_readbytes_expires_after_total_timeout);
+    RUN_TEST(test_bounded_stream_rejects_eof_at_deadline);
+    RUN_TEST(test_content_length_policy_rejects_known_oversize_body);
+    RUN_TEST(test_consume_to_end_rejects_tail_that_reaches_cap);
+    RUN_TEST(test_consume_to_end_accepts_body_exactly_at_cap);
+    RUN_TEST(test_consume_to_end_zero_cap_accepts_only_empty_body);
+    RUN_TEST(test_is_expired_basic);
+    RUN_TEST(test_is_expired_wraparound);
+    RUN_TEST(test_btc_verdict);
+    RUN_TEST(test_btc_price_parse_valid);
+    RUN_TEST(test_btc_price_parse_invalid);
     bool spiffsReady = SPIFFS.begin(false);
     if (!spiffsReady) { spiffsReady = SPIFFS.begin(true); }
     if (!spiffsReady) {

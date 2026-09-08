@@ -8,6 +8,7 @@ static_assert(STATIONBOARD_JSON_CAPACITY == 8192, "stability limit");
 static_assert(CONNECTIONS_JSON_CAPACITY == 8192, "stability limit");
 static_assert(MAX_STATION_LENGTH == 150, "portal field length");
 static_assert(MAX_STATION_OFFSET_MINUTES == 120, "station offset bound");
+static_assert(HTTP_TOTAL_TIMEOUT == 30000, "total http budget");
 
 Config config;
 int displayMode = 0;

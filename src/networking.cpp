@@ -1,7 +1,9 @@
 #include "networking.h"
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <TFT_eSPI.h>
 #include "globals.h"
+#include "tls_certs.h"
 
 extern WiFiManager wm;
 extern Config config;
@@ -11,10 +13,11 @@ extern bool forceRefresh;
 extern const unsigned long HTTP_TIMEOUT;
 extern const char* getBTCAPI;
 
-// Define HTTP_CODE_OK if it's not already defined
-#ifndef HTTP_CODE_OK
-#define HTTP_CODE_OK 200
-#endif
+namespace {
+bool httpStreamEof(Stream& stream) {
+    return !static_cast<WiFiClientSecure&>(stream).connected();
+}
+}
 
 void onConfigPortalStart(WiFiManager* myWiFiManager) {
     tft.fillScreen(TFT_BLACK);
@@ -272,29 +275,89 @@ void setupWiFiManager() {
     shouldSaveConfig = false;
 }
 
-void drawBTC() {
+FetchResult drawBTC() {
+    // Cert-validated HTTPS (Task 7): GTS Root R4 anchors api.coinbase.com
+    // via the WE1 <- R4-cross <- GlobalSign chain (see tls_certs.h audit).
+    // The previous http.begin(url) overload built an INSECURE client
+    // internally; that silent downgrade is gone. No setInsecure.
+    WiFiClientSecure client;
+    client.setCACert(TLS_BTC_ROOT_CA);
     HTTPClient http;
     http.setConnectTimeout(HTTP_TIMEOUT);
     http.setTimeout(HTTP_TIMEOUT);
-    http.begin(getBTCAPI);
-    
+    http.useHTTP10(true);
+    if (!http.begin(client, getBTCAPI)) {
+        Serial.println("BTC HTTP setup failed");
+        http.end();
+        displayStatus(false);
+        return FetchResult::HttpError;
+    }
+
+    const unsigned long requestStarted = millis();
     int httpCode = http.GET();
     Serial.print("HTTPCODE: ");
     Serial.println(httpCode);
 
     String bitcoin_price = "N/A";
-    
-    if (httpCode == HTTP_CODE_OK) {
-        String payload = http.getString();
-        DynamicJsonDocument doc(1024);
-        DeserializationError error = deserializeJson(doc, payload);
-        
-        if (!error && doc.containsKey("data") && doc["data"].containsKey("amount")) {
-            bitcoin_price = String((int)doc["data"]["amount"].as<float>());
+    FetchResult result = FetchResult::HttpError;
+
+    if (isExpired(requestStarted, millis(), HTTP_TOTAL_TIMEOUT)) {
+        result = FetchResult::TimedOut;
+        displayStatus(false);
+    } else if (httpCode == HTTP_OK_STATUS) {
+        int contentLength = http.getSize();
+        if (!isContentLengthAllowed(contentLength, defaultLimits())) {
+            result = FetchResult::TooLarge;
+            displayStatus(false);
+        } else {
+            BoundedStream bounded(http.getStream(), defaultLimits(), requestStarted, httpStreamEof);
+            String payload;
+            size_t reserveBytes = contentLength >= 0 ? (size_t)contentLength : 1024;
+            if (!payload.reserve(reserveBytes)) {
+                result = FetchResult::OutOfMemory;
+                displayStatus(false);
+            } else {
+                uint8_t buffer[128];
+                size_t count;
+                bool outOfMemory = false;
+                while ((count = bounded.readBytes(buffer, sizeof(buffer))) > 0) {
+                    if (!payload.concat((const char*)buffer, count)) {
+                        outOfMemory = true;
+                        break;
+                    }
+                }
+                if (outOfMemory) {
+                    result = FetchResult::OutOfMemory;
+                    displayStatus(false);
+                } else if (bounded.limitReached()) {
+                    Serial.printf("BTC response reached byte limit: %d bytes\n", (int)payload.length());
+                    displayStatus(false);
+                    result = FetchResult::TooLarge;
+                } else if (bounded.expired()) {
+                    Serial.println("BTC response timed out");
+                    displayStatus(false);
+                    result = FetchResult::TimedOut;
+                } else if (!bounded.eofReached()) {
+                    result = FetchResult::ParseError;
+                    displayStatus(false);
+                } else {
+                    String price;
+                    bool priceOk = parseBtcPrice(payload, price);
+                    result = btcVerdict(httpCode, priceOk);
+                    if (priceOk) {
+                        bitcoin_price = price;
+                        // Green ONLY on a fully valid price: 200 + invalid JSON is
+                        // failure (ParseError above), never success.
+                        displayStatus(true);
+                    } else {
+                        displayStatus(false);
+                    }
+                }
+            }
         }
-        displayStatus(true);
     } else {
         displayStatus(false);
+        result = FetchResult::HttpError;
     }
     
     http.end();
@@ -318,4 +381,7 @@ void drawBTC() {
     
     Serial.print("Bitcoin Price: ");
     Serial.println(bitcoin_price);
+    // Task 8 replaces this independent status painting with aggregated
+    // transport + BTC refresh status; callers currently ignore the return.
+    return result;
 }

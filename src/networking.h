@@ -7,6 +7,7 @@
 #include <cstring>
 #include "globals.h"
 #include "utilities.h"
+#include "http_request.h"
 
 // Forward declarations (Task 3: load/save return bool so callers can detect failure)
 void checkForConfigReset();
@@ -16,7 +17,7 @@ void saveConfigCallback();
 void displayStatus(bool isSuccess);
 
 void setupWiFiManager();
-void drawBTC();
+FetchResult drawBTC();
 
 // Refresh the portal parameters' displayed values from the live `config`.
 // Must be called before each portal open (boot autoConnect + runtime

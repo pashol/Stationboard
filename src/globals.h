@@ -38,6 +38,10 @@ extern bool portalRunning;
 // Constants
 extern const long timeOffset;
 extern const unsigned long HTTP_TIMEOUT;
+// Total wall-clock budget for one bounded HTTP transaction (Task 7):
+// connect + headers + body must finish inside this window, measured with
+// rollover-safe unsigned millis() subtraction (see isExpired()).
+constexpr unsigned long HTTP_TOTAL_TIMEOUT = 30000;
 extern const char* getBTCAPI;
 
 // Position constants

@@ -1,8 +1,17 @@
 #include "stationboard.h"
 #include "globals.h"
 #include "utilities.h"
+#include "http_request.h"
+#include "tls_certs.h"
 // #include "NotoSansBold15.h"
 #include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+
+namespace {
+bool httpStreamEof(Stream& stream) {
+    return !static_cast<WiFiClientSecure&>(stream).connected();
+}
+}
 
 void drawTransport(TFT_eSprite& sprite, const Transport& transport, int yPos) {
     const char* LONG_DISTANCE[] = {"IR", "IC", "EC", "ICE", "ICN", "TGV"};
@@ -107,37 +116,69 @@ void drawStation(const String& station) {
 }
 
 bool drawStationboard() {
+    // Cert-validated HTTPS (Task 7): ISRG Root X1 anchors the
+    // transport.opendata.ch chain (see tls_certs.h audit). No setInsecure.
+    WiFiClientSecure client;
+    client.setCACert(TLS_TRANSPORT_ROOT_CA);
     HTTPClient http;
     http.setConnectTimeout(HTTP_TIMEOUT);
+    http.setTimeout(HTTP_TIMEOUT);
     http.useHTTP10(true);
 
     String currentStationId = (displayMode == 0) ? config.stationId : config.stationId2;
 
-    String url = "http://transport.opendata.ch/v1/stationboard?id=" +
+    String url = "https://transport.opendata.ch/v1/stationboard?id=" +
                     URLEncode(currentStationId) + "&limit=" + URLEncode(String(config.limit)) +"&datetime=" + URLEncode(getFormattedTimeRelativeToNow(config.offset));
 
     Serial.println("Relative Time: " + getFormattedTimeRelativeToNow(config.offset));
     Serial.print("URL: ");
     Serial.println(url);
-    http.begin(url);
-
-    if (http.GET() != HTTP_CODE_OK) {
+    FetchResult result = FetchResult::HttpError;
+    if (!http.begin(client, url)) {
+        Serial.println("Stationboard HTTP setup failed");
+        http.end();
+        return false;
+    }
+    const unsigned long requestStarted = millis();
+    int httpCode = http.GET();
+    if (isExpired(requestStarted, millis(), HTTP_TOTAL_TIMEOUT)) {
+        result = FetchResult::TimedOut;
+        Serial.printf("Stationboard fetch failed: %d\n", (int)result);
+        http.end();
+        return false;
+    }
+    if (httpCode != HTTP_OK_STATUS) {
+        Serial.printf("Stationboard fetch failed: %d\n", (int)result);
         http.end();
         return false;
     }
     // Reject a known oversized body before parsing; unknown/misreported
-    // lengths stay bounded by the fixed 8KB document + filter (Task 7 adds
-    // byte-counting on the stream itself).
+    // lengths stay bounded by the BoundedStream byte cap below plus the
+    // fixed 8KB document + filter.
     int contentLength = http.getSize();
-    if (contentLength > (int)MAX_API_RESPONSE_BYTES) {
+    if (!isContentLengthAllowed(contentLength, defaultLimits())) {
         Serial.printf("Stationboard response too large: %d bytes\n", contentLength);
+        result = FetchResult::TooLarge;
+        Serial.printf("Stationboard fetch failed: %d\n", (int)result);
         http.end();
         return false;
     }
     StationboardSnapshot snapshot;
-    bool ok = parseStationboard(http.getStream(), snapshot);
+    BoundedStream bounded(http.getStream(), defaultLimits(), requestStarted, httpStreamEof);
+    bool ok = parseStationboard(bounded, snapshot);
+    if (ok) ok = consumeToEnd(bounded);
+    if (ok) {
+        result = FetchResult::Success;
+    } else if (bounded.limitReached()) {
+        result = FetchResult::TooLarge;
+    } else if (bounded.expired()) {
+        result = FetchResult::TimedOut;
+    } else {
+        result = FetchResult::ParseError;
+    }
     http.end(); // release fetch memory BEFORE rendering
     if (!ok) {
+        Serial.printf("Stationboard fetch failed: %d\n", (int)result);
         return false; // leave display untouched (stale semantics = Task 8)
     }
     drawStation(snapshot.station);
