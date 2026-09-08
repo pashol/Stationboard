@@ -1,125 +1,35 @@
 #include "stationboard.h"
 #include "globals.h"
 #include "utilities.h"
+#include "http_request.h"
+#include "tls_certs.h"
 // #include "NotoSansBold15.h"
 #include <HTTPClient.h>
-#include <JsonStreamingParser.h>
+#include <WiFiClientSecure.h>
 
-TransportListener::TransportListener() : inStationboard(false), inStop(false) {}
-
-const std::vector<Transport>& TransportListener::getTransports() const {
-    return transports;
+namespace {
+bool httpStreamEof(Stream& stream) {
+    return !static_cast<WiFiClientSecure&>(stream).connected();
 }
 
-String TransportListener::getStation() const {
-    return station;
+StationboardSnapshot currentSnapshots[2];
+bool hasCurrentSnapshot[2] = {false, false};
+
 }
 
-void TransportListener::whitespace(char c) {
-    // Ignore whitespace characters
-}
+void expireStationboardIfStale(unsigned long now) {
+    if (displayMode == 2) return;
 
-void TransportListener::startDocument() {   
-    Serial.println("Start parsing");
-    transports.clear();
-    station = "";
-    inStationboard = false;
-    currentPath = "";
-    currentKey = "";
-    inStop = false;
-}
-
-void TransportListener::key(String key) {
-    currentKey = key;
-    
-    if (inStationboard) {
-        if (inStop) {
-            currentPath = "stationboard/stop/" + key;
-        } else {
-            currentPath = "stationboard/" + key;
-        }
-    }
-}
-
-void TransportListener::value(String value) {
-    String fullPath = currentPath + "/" + currentKey;
-
-    if (station.isEmpty()){
-        if (fullPath == "/station/name") {
-            station = value;
-            Serial.print("Found station: ");
-            Serial.println(value);
-        }
+    const int view = displayMode == 0 ? 0 : 1;
+    if (!hasCurrentSnapshot[view] ||
+        isSnapshotFresh(currentSnapshots[view].receivedAt, now, STATIONBOARD_STALE_AFTER_MS)) {
+        return;
     }
 
-    if (fullPath.endsWith("/stop/departure")) {
-        currentTransport.departure = extractTime(value);
-    }
-    else if (fullPath.endsWith("/stop/delay")) {
-        currentTransport.delay = value;
-    }
-    else if (fullPath.endsWith("/name")) {
-        currentTransport.name = value;
-    }
-    else if (fullPath.endsWith("/category")) {
-        currentTransport.category = value;
-    }
-    else if (fullPath.endsWith("/number")) {
-        if (value != "null") {
-            int numValue = value.toInt();
-            currentTransport.number = (numValue < 1000) ? String(numValue) : "";
-        }
-    }
-    else if (fullPath.endsWith("/to")) {
-        if (value.length() > 25) {
-            value = value.substring(0, 22) + "...";
-        }
-        currentTransport.destination = value;
-        transports.push_back(currentTransport);
-        resetTransport();
-    }
-}
-
-void TransportListener::endArray() {
-    int lastSlash = currentPath.lastIndexOf('/');
-    if (lastSlash >= 0) {
-        currentPath = currentPath.substring(0, lastSlash);
-    }
-}
-
-void TransportListener::startArray() {
-    if (currentKey.length() > 0) {
-        currentPath += "/" + currentKey;
-    }
-}
-
-void TransportListener::startObject() {
-    if (currentKey.length() > 0) {
-        currentPath += "/" + currentKey;
-    }
-}
-
-void TransportListener::endObject() {
-    int lastSlash = currentPath.lastIndexOf('/');
-    if (lastSlash >= 0) {
-        currentPath = currentPath.substring(0, lastSlash);
-    }
-}
-
-void TransportListener::endDocument() {
-    Serial.println("Ende JSON");
-    Serial.println("----------------------------");
-}
-
-void TransportListener::resetTransport() {
-    currentTransport = Transport();
-}
-
-String TransportListener::extractTime(const String& isoTime) {
-    if (isoTime.length() >= 16) {
-        return isoTime.substring(11, 16); // Extract HH:MM
-    }
-    return "";
+    hasCurrentSnapshot[view] = false;
+    drawStation("STALE DATA");
+    // Directly clear departure rows so low heap cannot retain stale entries.
+    tft.fillRect(0, POS_FIRST, tft.width(), 10 * POS_INC, TFT_BLUE);
 }
 
 void drawTransport(TFT_eSprite& sprite, const Transport& transport, int yPos) {
@@ -179,11 +89,11 @@ void drawTransport(TFT_eSprite& sprite, const Transport& transport, int yPos) {
     sprite.drawString(transport.destination, POS_TO, yPos + 1);
 }
 
-void displayTransports(const std::vector<Transport>& transports) {
-    // Filter out null transports
-    std::vector<Transport> validTransports;
-    std::copy_if(transports.begin(), transports.end(), std::back_inserter(validTransports),
-        [](const Transport& t) { return t.name != "null"; });
+void displayTransports(const StationboardSnapshot& snapshot) {
+    // Null-named rows are skipped per-row inside drawTransport; no copied
+    // vector is built here. Loops are bounded to snapshot.count (which never
+    // exceeds MAX_TRANSPORTS by the parser contract).
+    size_t count = snapshot.count <= MAX_TRANSPORTS ? snapshot.count : MAX_TRANSPORTS;
 
     // Print table header
     Serial.println("+--------+---------------------------+-------+------+");
@@ -192,20 +102,23 @@ void displayTransports(const std::vector<Transport>& transports) {
 
     TFT_eSprite sprite(&tft);
     sprite.setColorDepth(8);
-    sprite.createSprite(tft.width(), 5 * POS_INC);
+    if (sprite.createSprite(tft.width(), 5 * POS_INC) == nullptr) {
+        Serial.println("displayTransports: sprite allocation failed - keeping previous frame");
+        return;
+    }
     sprite.loadFont(AA_FONT_SMALL);
 
     // Draw first half (0-4)
     sprite.fillSprite(TFT_BLUE);
-    for (size_t i = 0; i < std::min(size_t(5), validTransports.size()); i++) {
-        drawTransport(sprite, validTransports[i], i * POS_INC);
+    for (size_t i = 0; i < count && i < 5; i++) {
+        drawTransport(sprite, snapshot.rows[i], i * POS_INC);
     }
     sprite.pushSprite(0, POS_FIRST);
 
     // Draw second half (5-9)
     sprite.fillSprite(TFT_BLUE);
-    for (size_t i = 5; i < validTransports.size(); i++) {
-        drawTransport(sprite, validTransports[i], (i-5) * POS_INC);
+    for (size_t i = 5; i < count; i++) {
+        drawTransport(sprite, snapshot.rows[i], (i-5) * POS_INC);
     }
     sprite.pushSprite(0, POS_FIRST + (5 * POS_INC));
 
@@ -221,45 +134,75 @@ void drawStation(const String& station) {
     tft.drawString(station, POS_BUS, 7);
 }
 
-void drawStationboard() {
-    static TransportListener listener;
-    static String lastStationId;
+FetchResult drawStationboard() {
+    // Cert-validated HTTPS (Task 7): ISRG Root X1 anchors the
+    // transport.opendata.ch chain (see tls_certs.h audit). No setInsecure.
+    WiFiClientSecure client;
+    client.setCACert(TLS_TRANSPORT_ROOT_CA);
     HTTPClient http;
     http.setConnectTimeout(HTTP_TIMEOUT);
-    
-    String currentStationId = isFirstStation ? config.stationId : config.stationId2;
-    
-    String url = "http://transport.opendata.ch/v1/stationboard?id=" + 
-                    URLEncode(currentStationId) + "&limit=" + URLEncode(String(config.limit)) +"&datetime=" + URLEncode(getFormattedTimeRelativeToNow(config.offset));
+    http.setTimeout(HTTP_TIMEOUT);
+    http.useHTTP10(true);
 
-    Serial.println("Relative Time: " + getFormattedTimeRelativeToNow(config.offset));
+    String currentStationId = (displayMode == 0) ? config.stationId : config.stationId2;
+    String relativeTime = getFormattedTimeRelativeToNow(config.offset);
+    String url = buildStationboardUrl(currentStationId, config.limit, relativeTime);
+
+    Serial.println("Relative Time: " + relativeTime);
     Serial.print("URL: ");
     Serial.println(url);
-    http.begin(url);
-    
-    if (http.GET() == HTTP_CODE_OK) {
-        String response = http.getString();
-        // Handle Unicode characters
-        response.replace("\\u00fc", "ü");  // ü
-        response.replace("\\u00f6", "ö");  // ö
-        response.replace("\\u00e4", "ä");  // ä
-        response.replace("\\u00dc", "Ü");  // Ü
-        response.replace("\\u00d6", "Ö");  // Ö
-        response.replace("\\u00c4", "Ä");  // Ä
-        response.replace("\\u00e9", "é");  // é
-        response.replace("\\u00e0", "à");  // à
-        response.replace("\\u00e8", "è");  // è
-        
-        JsonStreamingParser parser;
-        parser.setListener(&listener);
-        for (char c : response) {
-            parser.parse(c);
-        }
-        parser.reset(); // Ensure parser is empty
-        drawStation(listener.getStation());
-        displayTransports(listener.getTransports());
-
+    FetchResult result = FetchResult::HttpError;
+    if (!http.begin(client, url)) {
+        Serial.println("Stationboard HTTP setup failed");
+        http.end();
+        return result;
     }
-    http.end();
-
+    const unsigned long requestStarted = millis();
+    int httpCode = http.GET();
+    if (isExpired(requestStarted, millis(), HTTP_TOTAL_TIMEOUT)) {
+        result = FetchResult::TimedOut;
+        Serial.printf("Stationboard fetch failed: %d\n", (int)result);
+        http.end();
+        return result;
+    }
+    if (httpCode != HTTP_OK_STATUS) {
+        Serial.printf("Stationboard fetch failed: %d\n", (int)result);
+        http.end();
+        return result;
+    }
+    // Reject a known oversized body before parsing; unknown/misreported
+    // lengths stay bounded by the BoundedStream byte cap below plus the
+    // fixed 8KB document + filter.
+    int contentLength = http.getSize();
+    if (!isContentLengthAllowed(contentLength, defaultLimits())) {
+        Serial.printf("Stationboard response too large: %d bytes\n", contentLength);
+        result = FetchResult::TooLarge;
+        Serial.printf("Stationboard fetch failed: %d\n", (int)result);
+        http.end();
+        return result;
+    }
+    StationboardSnapshot snapshot;
+    BoundedStream bounded(http.getStream(), defaultLimits(), requestStarted, httpStreamEof);
+    bool ok = parseStationboard(bounded, snapshot);
+    if (ok) ok = consumeToEnd(bounded);
+    if (ok) {
+        result = FetchResult::Success;
+    } else if (bounded.limitReached()) {
+        result = FetchResult::TooLarge;
+    } else if (bounded.expired()) {
+        result = FetchResult::TimedOut;
+    } else {
+        result = FetchResult::ParseError;
+    }
+    http.end(); // release fetch memory BEFORE rendering
+    if (!ok) {
+        Serial.printf("Stationboard fetch failed: %d\n", (int)result);
+        return result;
+    }
+    const int view = displayMode == 0 ? 0 : 1;
+    currentSnapshots[view] = snapshot;
+    hasCurrentSnapshot[view] = true;
+    drawStation(currentSnapshots[view].station);
+    displayTransports(currentSnapshots[view]);
+    return FetchResult::Success;
 }

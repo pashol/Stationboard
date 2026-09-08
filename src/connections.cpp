@@ -1,0 +1,199 @@
+#include "connections.h"
+#include "globals.h"
+#include "utilities.h"
+#include "http_request.h"
+#include "tls_certs.h"
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+
+namespace {
+bool httpStreamEof(Stream& stream) {
+    return !static_cast<WiFiClientSecure&>(stream).connected();
+}
+
+ConnectionsSnapshot currentSnapshot;
+bool hasCurrentSnapshot = false;
+
+}
+
+void expireConnectionsIfExpired(int64_t now) {
+    if (displayMode != 2 || !hasCurrentSnapshot ||
+        !connectionsSnapshotExpired(currentSnapshot, now)) {
+        return;
+    }
+
+    hasCurrentSnapshot = false;
+    tft.loadFont(AA_FONT_SMALL);
+    tft.setTextColor(TFT_BLACK, TFT_WHITE);
+    tft.fillRect(0, 0, tft.width(), 25, TFT_WHITE);
+    tft.drawString("STALE DATA", POS_BUS, 7);
+    // Directly clear departure rows so low heap cannot retain stale entries.
+    tft.fillRect(0, POS_FIRST, tft.width(), 10 * POS_INC, TFT_BLUE);
+}
+
+// ── Display functions ────────────────────────────────────────────────────────
+
+void drawConnectionsHeader(const String& from, const String& to) {
+    tft.loadFont(AA_FONT_SMALL);
+    tft.setTextColor(TFT_BLACK, TFT_WHITE);
+    tft.fillRect(0, 0, tft.width(), 25, TFT_WHITE);
+    String label = from + " - " + to;
+    if (label.length() > 30) label = label.substring(0, 27) + "...";
+    tft.drawString(label, POS_BUS, 7);
+}
+
+void drawConnection(TFT_eSprite& sprite, const Connection& conn, int yPos) {
+    const char* LONG_DISTANCE[] = {"IR", "IC", "EC", "ICE", "ICN", "TGV"};
+    const char* REGIONAL[]      = {"S", "RE", "RB", "R", "T", "N", "SN"};
+
+    // Determine product category from the product string (first word)
+    String product = conn.product;
+    product.trim();
+    String category = "";
+    int spaceIdx = product.indexOf(' ');
+    if (spaceIdx > 0) category = product.substring(0, spaceIdx);
+    else category = product;
+
+    bool isLongDistance = false;
+    for (auto& cat : LONG_DISTANCE) { if (category == cat) { isLongDistance = true; break; } }
+    bool isRegional = false;
+    for (auto& cat : REGIONAL) { if (category == cat) { isRegional = true; break; } }
+
+    // Draw product badge (colored background, same as drawTransport)
+    String productLabel = product;
+    if (productLabel.length() > 6) productLabel = productLabel.substring(0, 6);
+    while (productLabel.length() < 6) productLabel += " ";
+
+    if (isLongDistance) {
+        sprite.setTextColor(TFT_WHITE, TFT_RED);
+        sprite.fillRect(0, yPos, POS_TIME - POS_BUS - 1, POS_INC - 3, TFT_RED);
+    } else if (isRegional) {
+        sprite.setTextColor(TFT_BLUE, TFT_WHITE);
+        sprite.fillRect(0, yPos, POS_TIME - POS_BUS - 1, POS_INC - 3, TFT_WHITE);
+    } else {
+        sprite.setTextColor(TFT_WHITE, TFT_BLUE);
+    }
+    sprite.drawString(productLabel, POS_BUS, yPos + 1);
+
+    // Departure time
+    sprite.setTextColor(TFT_WHITE, TFT_BLUE);
+    sprite.drawString(conn.departure, POS_TIME, yPos + 1);
+
+    // Arrow
+    sprite.drawString("-", 97, yPos + 1);
+
+    // Arrival time
+    sprite.drawString(conn.arrival, 115, yPos + 1);
+
+    // Duration
+    sprite.drawString(conn.duration, 168, yPos + 1);
+
+    // Transfers
+    sprite.drawString(String(conn.transfers) + "<>", 215, yPos + 1);
+
+    // Delay (only if > 0)
+    if (conn.delay > 0) {
+        sprite.setTextColor(TFT_YELLOW, TFT_BLUE);
+        sprite.drawString("+" + String(conn.delay), 260, yPos + 1);
+    }
+}
+
+void displayConnections(const ConnectionsSnapshot& snapshot) {
+    // No copies: rows are read in place. Loops are bounded to
+    // snapshot.count (which never exceeds MAX_CONNECTIONS by the parser
+    // contract), clamped defensively.
+    size_t count = snapshot.count <= MAX_CONNECTIONS ? snapshot.count : MAX_CONNECTIONS;
+    Serial.printf("Displaying %d connections\n", count);
+
+    TFT_eSprite sprite(&tft);
+    sprite.setColorDepth(8);
+    if (sprite.createSprite(tft.width(), 5 * POS_INC) == nullptr) {
+        Serial.println("displayConnections: sprite allocation failed - keeping previous frame");
+        return;
+    }
+    sprite.loadFont(AA_FONT_SMALL);
+
+    // Draw first half (0-4)
+    sprite.fillSprite(TFT_BLUE);
+    for (size_t i = 0; i < count && i < 5; i++) {
+        drawConnection(sprite, snapshot.rows[i], i * POS_INC);
+    }
+    sprite.pushSprite(0, POS_FIRST);
+
+    // Draw second half (5-7)
+    sprite.fillSprite(TFT_BLUE);
+    for (size_t i = 5; i < count; i++) {
+        drawConnection(sprite, snapshot.rows[i], (i - 5) * POS_INC);
+    }
+    sprite.pushSprite(0, POS_FIRST + (5 * POS_INC));
+}
+
+FetchResult fetchAndDrawConnections() {
+    // Cert-validated HTTPS (Task 7): ISRG Root X1 anchors the
+    // transport.opendata.ch chain (see tls_certs.h audit). No setInsecure.
+    WiFiClientSecure client;
+    client.setCACert(TLS_TRANSPORT_ROOT_CA);
+    HTTPClient http;
+    http.setConnectTimeout(HTTP_TIMEOUT);
+    http.setTimeout(HTTP_TIMEOUT);
+    http.useHTTP10(true);
+
+    String url = "https://transport.opendata.ch/v1/connections?from=" +
+        URLEncode(config.stationId) + "&to=" + URLEncode(config.stationId2) + "&limit=8";
+
+    Serial.print("Connections URL: ");
+    Serial.println(url);
+    FetchResult result = FetchResult::HttpError;
+    if (!http.begin(client, url)) {
+        Serial.println("Connections HTTP setup failed");
+        http.end();
+        return result;
+    }
+    const unsigned long requestStarted = millis();
+    int httpCode = http.GET();
+    if (isExpired(requestStarted, millis(), HTTP_TOTAL_TIMEOUT)) {
+        result = FetchResult::TimedOut;
+        Serial.printf("Connections fetch failed: %d\n", (int)result);
+        http.end();
+        return result;
+    }
+    if (httpCode != HTTP_OK_STATUS) {
+        Serial.printf("Connections fetch failed: %d\n", (int)result);
+        http.end();
+        return result;
+    }
+    // Reject a known oversized body before parsing; unknown/misreported
+    // lengths stay bounded by the BoundedStream byte cap below plus the
+    // fixed 8KB document + filter.
+    int contentLength = http.getSize();
+    if (!isContentLengthAllowed(contentLength, defaultLimits())) {
+        Serial.printf("Connections response too large: %d bytes\n", contentLength);
+        result = FetchResult::TooLarge;
+        Serial.printf("Connections fetch failed: %d\n", (int)result);
+        http.end();
+        return result;
+    }
+    ConnectionsSnapshot snapshot;
+    BoundedStream bounded(http.getStream(), defaultLimits(), requestStarted, httpStreamEof);
+    bool ok = parseConnections(bounded, snapshot);
+    if (ok) ok = consumeToEnd(bounded);
+    if (ok) {
+        result = FetchResult::Success;
+    } else if (bounded.limitReached()) {
+        result = FetchResult::TooLarge;
+    } else if (bounded.expired()) {
+        result = FetchResult::TimedOut;
+    } else {
+        result = FetchResult::ParseError;
+    }
+    http.end(); // release fetch memory BEFORE rendering
+    if (!ok) {
+        Serial.printf("Connections fetch failed: %d\n", (int)result);
+        return result;
+    }
+    currentSnapshot = snapshot;
+    hasCurrentSnapshot = true;
+    drawConnectionsHeader(config.stationId, config.stationId2);
+    displayConnections(currentSnapshot);
+    return FetchResult::Success;
+}

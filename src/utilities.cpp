@@ -1,14 +1,14 @@
 #include "utilities.h"
 #include "globals.h"
 #include "stationboard.h"
+#include "connections.h"
 #include "nightmode.h"
-#include "utilities.h"
 #include "networking.h"
+#include "ota.h"  // Task 4: extern bool otaMode for portal/OTA mutual exclusion
 #include <WiFiManager.h>
 #include <FS.h>
 #include <SPIFFS.h>
 #include <ArduinoJson.h>
-#include <WiFiManager.h>
 #include <TimeLib.h>
 #include <Timezone.h>
 
@@ -68,22 +68,9 @@ void checkForConfigReset() {
     }
 }
 
-String URLEncode(String msg) {
-    const char *hex = "0123456789ABCDEF";
-    String encodedMsg = "";
-    
-    for (char c : msg) {
-        if (isAlphaNumeric(c) || c == '-' || c == '_' 
-            || c == '.' || c == '~') {
-            encodedMsg += c;
-        } else {
-            encodedMsg += '%';
-            encodedMsg += hex[c >> 4];
-            encodedMsg += hex[c & 0xF];
-        }
-    }
-    return encodedMsg;
-}
+// NOTE (Task 2): URLEncode, validateConfiguration and normalizeConfiguration
+// are defined inline in utilities.h / globals.h so device tests link them
+// without extra translation units. Firmware uses the same definitions.
 
 String getTimeWithoutSeconds() {
     time_t utc = timeClient.getEpochTime();
@@ -122,8 +109,6 @@ String getDayOfWeek() {
 }
 
 void drawCurrentTime() {
-    timeClient.update();
-    
     // Create temporary sprite for time display
     TFT_eSprite timeSprite(&tft);
     timeSprite.setColorDepth(8);
@@ -135,14 +120,19 @@ void drawCurrentTime() {
     
     // Draw time and date
     timeSprite.setTextColor(TFT_BLACK, TFT_WHITE);
-    timeSprite.drawString(getFormattedDateTime(), 4, 5);
+    if (clockValid) {
+        timeSprite.drawString(getFormattedDateTime(), 4, 5);
+    } else {
+        timeSprite.drawString("--:-- - syncing time", 4, 5);
+    }
     
     // Push to bottom of screen
     timeSprite.pushSprite(0, tft.height() - 25);
 }
 
 String getFormattedTimeRelativeToNow(int minutesOffset) {
-    time_t utc = timeClient.getEpochTime() + (minutesOffset * 60);
+    int64_t offsetSeconds = (int64_t)minutesOffset * 60;
+    time_t utc = (time_t)((int64_t)timeClient.getEpochTime() + offsetSeconds);
     time_t local = euCET.toLocal(utc);
 
     char buffer[20];
@@ -156,6 +146,9 @@ String getFormattedTimeRelativeToNow(int minutesOffset) {
 }
 
 void updateBrightness() {
+    // Defensively constrain the index: it can be set from persisted config
+    // or button handling, so never trust it before indexing the table.
+    currentBrightnessIndex = constrain(currentBrightnessIndex, 0, NUM_LEVELS - 1);
     // Set backlight brightness using LED PWM channel
     ledcWrite(PWM_CHANNEL, BRIGHTNESS_LEVELS[currentBrightnessIndex]);
     
@@ -164,7 +157,7 @@ void updateBrightness() {
 }
 
 void cycleBrightness() {
-    if (inNightMode) {
+    if (nightMode.active) {
         // During night mode, button click triggers temporary wake
         handleNightModeButton();
     } else {
@@ -174,10 +167,17 @@ void cycleBrightness() {
     }
 }
 
+void logHeap(const char* phase) {
+    Serial.printf("Heap[%s]: free=%u largest=%u min=%u\n",
+                  phase,
+                  ESP.getFreeHeap(),
+                  ESP.getMaxAllocHeap(),
+                  ESP.getMinFreeHeap());
+}
+
 void debugInfo() {
     Serial.println("Debug info:");
-    Serial.printf("Free heap: %d bytes\n", ESP.getFreeHeap());
-    Serial.printf("Largest block: %d bytes\n", ESP.getMaxAllocHeap());
+    logHeap("refresh");
     UBaseType_t watermark = uxTaskGetStackHighWaterMark(NULL);
     Serial.printf("Stack watermark: %d bytes\n", watermark);
     Serial.println("RSSI: " + String(WiFi.RSSI()) + "dBm");
@@ -191,77 +191,11 @@ void debugInfo() {
     Serial.println("Uptime:" + String(millis() / 1000) + "s");
 }
 
-void loadConfiguration() {
-    if (SPIFFS.exists("/config.json")) {
-        File configFile = SPIFFS.open("/config.json", FILE_READ);
-        if (configFile) {
-            DynamicJsonDocument doc(1024);
-            DeserializationError error = deserializeJson(doc, configFile);
-            
-            if (!error) {
-                config.stationId = doc["station_id"].as<String>();
-                config.stationId2 = doc["station_id2"].as<String>();
-                config.limit = doc["limit"].as<int>();
-                config.offset = doc["offset"].as<int>();
-                config.defaultBrightness = doc["defaultBrightness"].as<int>();
-                // Night mode settings
-                config.nightModeEnabled = doc["nightModeEnabled"] | false;
-                config.nightModeStartHour = doc["nightModeStartHour"] | 22;
-                config.nightModeStartMinute = doc["nightModeStartMinute"] | 0;
-                config.nightModeEndHour = doc["nightModeEndHour"] | 7;
-                config.nightModeEndMinute = doc["nightModeEndMinute"] | 0;
-                config.nightModeWeekendDisable = doc["nightModeWeekendDisable"] | false;
-            }
-            configFile.close();
-        } else {
-            Serial.println("No config found");
-        }
-    }
-}
-
-void saveConfiguration() {
-    DynamicJsonDocument doc(1024);
-    doc["station_id"] = config.stationId;
-    doc["station_id2"] = config.stationId2;
-    doc["limit"] = config.limit;
-    doc["offset"] = config.offset;
-    doc["defaultBrightness"] = config.defaultBrightness;
-    // Night mode settings
-    doc["nightModeEnabled"] = config.nightModeEnabled;
-    doc["nightModeStartHour"] = config.nightModeStartHour;
-    doc["nightModeStartMinute"] = config.nightModeStartMinute;
-    doc["nightModeEndHour"] = config.nightModeEndHour;
-    doc["nightModeEndMinute"] = config.nightModeEndMinute;
-    doc["nightModeWeekendDisable"] = config.nightModeWeekendDisable;
-
-    File configFile = SPIFFS.open("/config.json", FILE_WRITE);
-    if (!configFile) {
-        Serial.println("- failed to open file for writing");
-        return;
-    }
-
-    serializeJson(doc, Serial);
-    serializeJson(doc, configFile);
-    configFile.close();
-    
-    // Verify the write
-    configFile = SPIFFS.open("/config.json");
-    if (!configFile) {
-        Serial.println("- failed to open file for verification");
-        return;
-    }
-    
-    if (configFile.size() > 0) {
-        Serial.println("- config file verified");
-        Serial.println("Contents:");
-        while(configFile.available()) {
-            Serial.write(configFile.read());
-        }
-    } else {
-        Serial.println("- config file appears empty");
-    }
-    configFile.close();
-}
+// NOTE (Task 3): loadConfiguration, transactional saveConfiguration and
+// their parseValidateConfigFile helper are defined inline in utilities.h so
+// device tests link them without extra translation units. Firmware uses the
+// same definitions. checkForConfigReset below keeps SPIFFS.begin(true): it
+// is the explicit boot-button recovery flow allowed to format.
 
 void saveConfigCallback() {
     Serial.println("Should save config");
@@ -291,15 +225,22 @@ void drawPortalIndicator() {
 }
 
 void startConfigPortal() {
+    // Task 4: portal and OTA own port 80 exclusively — refuse the portal
+    // while OTA mode is active (the OTA side in ota.cpp is out of scope).
+    if (otaMode) {
+        Serial.println("Config portal refused: OTA mode active");
+        return;
+    }
+
     // Config portal is disabled during night mode (when display is dark)
-    if (inNightMode && !temporaryNightWake) {
+    if (nightMode.active && !nightMode.temporaryWake) {
         Serial.println("Config portal disabled during night mode");
         return;
     }
 
     // Extend temporary wake if in night mode
-    if (inNightMode && temporaryNightWake) {
-        nightWakeStartTime = millis();
+    if (nightMode.active && nightMode.temporaryWake) {
+        nightMode.wakeStartTime = millis();
         Serial.println("Extended night wake");
     }
 
@@ -309,6 +250,9 @@ void startConfigPortal() {
         if(!portalRunning){
             Serial.println("Starting Portal");
             Serial.printf("Config portal started at: http://%s\n", WiFi.localIP().toString().c_str());
+            // Task 4: refresh program-lifetime param values from the live
+            // config before the portal serves them.
+            refreshPortalParameters();
             wm.startWebPortal();
             portalRunning = true;
             drawPortalIndicator();
@@ -321,27 +265,30 @@ void startConfigPortal() {
             tft.fillScreen(TFT_BLUE);
             tft.fillRect(0, tft.height() - 25 , tft.width(), 25, TFT_WHITE);
             drawCurrentTime();
-            drawStationboard();
-            drawBTC();
+            FetchResult transport = displayMode == 2 ? fetchAndDrawConnections() : drawStationboard();
+            FetchResult btc = drawBTC();
+            RefreshResult refresh{transport, btc, millis()};
+            displayStatus(isTransportFreshResult(refresh.transport));
           }
     }
 }
 
 void switchStation() {
-    if (inNightMode && !temporaryNightWake) {
+    if (nightMode.active && !nightMode.temporaryWake) {
         // During night mode without temporary wake, do nothing
         return;
     }
-    
+
     // Extend temporary wake if in night mode
-    if (inNightMode && temporaryNightWake) {
-        nightWakeStartTime = millis();
+    if (nightMode.active && nightMode.temporaryWake) {
+        nightMode.wakeStartTime = millis();
         Serial.println("Extended night wake");
     }
-    
-    isFirstStation = !isFirstStation;
-    Serial.println(isFirstStation ? "Switched to first station" : "Switched to second station");
-    drawStationboard(); // Redraw the stationboard with the new station, force refresh
+
+    int maxModes = config.connectionsEnabled ? 3 : 2;
+    displayMode = (displayMode + 1) % maxModes;
+    Serial.println("Switched to display mode: " + String(displayMode));
+    forceRefresh = true;
 }
 
 void displayStatus(bool isSuccess) {
@@ -362,13 +309,6 @@ bool isWeekend() {
 }
 
 bool isNightModeActive() {
-    if (!config.nightModeEnabled) return false;
-    
-    // Check if weekend should disable night mode
-    if (config.nightModeWeekendDisable && isWeekend()) {
-        return false;
-    }
-    
     time_t utc = timeClient.getEpochTime();
     time_t local = euCET.toLocal(utc);
     int currentHour = hour(local);
@@ -378,21 +318,17 @@ bool isNightModeActive() {
     int startTime = config.nightModeStartHour * 60 + config.nightModeStartMinute;
     int endTime = config.nightModeEndHour * 60 + config.nightModeEndMinute;
     
-    if (startTime < endTime) {
-        // Normal case: e.g., 22:00 to 23:00 (same day)
-        return (currentTime >= startTime && currentTime < endTime);
-    } else {
-        // Crosses midnight: e.g., 22:00 to 07:00
-        return (currentTime >= startTime || currentTime < endTime);
-    }
+    return isNightModeActiveAtLocalTime(clockValid, config.nightModeEnabled,
+                                        config.nightModeWeekendDisable, isWeekend(),
+                                        currentTime, startTime, endTime);
 }
 
 void enterNightMode() {
-    if (inNightMode) return;
-    
+    if (nightMode.active) return;
+
     Serial.println("Entering night mode");
-    inNightMode = true;
-    temporaryNightWake = false;
+    nightMode.active = true;
+    nightMode.temporaryWake = false;
     
     // Turn off display
     ledcWrite(PWM_CHANNEL, 0);
@@ -402,11 +338,11 @@ void enterNightMode() {
 }
 
 void exitNightMode() {
-    if (!inNightMode) return;
-    
+    if (!nightMode.active) return;
+
     Serial.println("Exiting night mode");
-    inNightMode = false;
-    temporaryNightWake = false;
+    nightMode.active = false;
+    nightMode.temporaryWake = false;
     
     // Restore brightness
     updateBrightness();
@@ -420,11 +356,11 @@ void exitNightMode() {
 }
 
 void handleNightModeButton() {
-    if (!inNightMode) return;
-    
+    if (!nightMode.active) return;
+
     // Wake up temporarily
-    temporaryNightWake = true;
-    nightWakeStartTime = millis();
+    nightMode.temporaryWake = true;
+    nightMode.wakeStartTime = millis();
     
     // Restore brightness temporarily
     updateBrightness();
@@ -440,11 +376,11 @@ void handleNightModeButton() {
 }
 
 void updateNightModeDisplay() {
-    if (!inNightMode || !temporaryNightWake) return;
-    
+    if (!nightMode.active || !nightMode.temporaryWake) return;
+
     // Check if temporary wake duration has expired
-    if (millis() - nightWakeStartTime >= NIGHT_WAKE_DURATION) {
-        temporaryNightWake = false;
+    if (temporaryWakeExpired(nightMode.wakeStartTime, millis(), NIGHT_WAKE_DURATION)) {
+        nightMode.temporaryWake = false;
         
         // Turn off display again
         ledcWrite(PWM_CHANNEL, 0);
@@ -458,10 +394,10 @@ void updateNightModeDisplay() {
 
 void checkNightMode() {
     bool shouldBeInNightMode = isNightModeActive();
-    
-    if (shouldBeInNightMode && !inNightMode) {
+
+    if (shouldBeInNightMode && !nightMode.active) {
         enterNightMode();
-    } else if (!shouldBeInNightMode && inNightMode) {
+    } else if (!shouldBeInNightMode && nightMode.active) {
         exitNightMode();
     }
 }

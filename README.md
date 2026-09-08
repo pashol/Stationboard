@@ -19,10 +19,10 @@ Bring the train station display to your home or office! Get accurate departure t
 ## Features
 
 - **Real-time departures** from Swiss public transport (trains, buses, trams, boats)
-- **Two stations** - switch between two configurable stations with a double-click
+- **Station and connections views** - cycle station 1, station 2, and optionally a configured journey view
 - **5 brightness levels** including a power-saving sleep mode
 - **BTC price ticker** in the footer
-- **OTA firmware updates** - update wirelessly via web browser
+- **Authenticated OTA firmware updates** - opt-in at build time, then update wirelessly via web browser
 - **WiFi configuration portal** - easy setup via smartphone
 - **Automatic time sync** with NTP (handles DST)
 - **Night mode** - automatic power saving from 22:00 to 06:00
@@ -56,13 +56,14 @@ Use my [dedicated page](https://stationboard-uploader.vercel.app/) to flash the 
 3. Connect to this AP with your smartphone
 4. A captive portal opens where you can:
    - Select your WiFi network and enter credentials
-   - Set **Station 1** and **Station 2** names (e.g., "Zürich HB", "Bern")
+    - Set **Station 1** and **Station 2** names (e.g., "Zürich HB", "Bern")
+    - Enable connections mode and configure its destination and walking offset when needed
    - Configure the number of departures to display
    - Set default brightness level
 
 ### Reconfiguring WiFi
 
-Multi-click the button to re-enter the WiFi configuration portal.
+Triple-click the button to open or close the WiFi configuration portal. The portal cannot open during OTA mode, and it is unavailable while the display is asleep for night mode unless temporarily woken.
 
 ## Usage
 
@@ -71,16 +72,34 @@ Multi-click the button to re-enter the WiFi configuration portal.
 | Action | Function |
 |--------|----------|
 | **Single click** | Cycle through brightness levels (0-4) |
-| **Double click** | Switch between Station 1 and Station 2 |
-| **Multi-click** | Enter WiFi configuration portal |
+| **Double click** | Cycle Station 1, Station 2, and connections mode when enabled |
+| **Triple click** | Open or close WiFi configuration portal |
 | **Long press (10s)** | Enter OTA firmware update mode |
 
 ### OTA Updates
 
+OTA is disabled by default. Builds that enable it must set both build-time
+environment variables, without committing their values:
+
+```powershell
+$env:OTA_USERNAME = "your-ota-user"
+$env:OTA_PASSWORD = "a-strong-secret"
+& "$HOME\.platformio\penv\Scripts\pio.exe" run
+```
+
 1. Long press the button for 10 seconds
-2. The device enters OTA mode and displays its IP address
+2. The device enters authenticated OTA mode and displays its IP address
 3. Open a web browser and navigate to `http://<device-ip>/update`
-4. Upload the new firmware binary
+4. Upload the new firmware binary using the configured credentials
+
+The OTA page closes after two minutes without an upload. An upload that makes
+no progress for 30 seconds, fails, or loses WiFi also closes OTA mode. The
+configuration portal and OTA mode are mutually exclusive. Firmware uses two
+1.5 MB OTA slots, so builds fail if the firmware does not fit in a slot.
+
+### Offline and Stale Data
+
+When WiFi is unavailable, the display reports an offline/red status and reconnects automatically. A stationboard snapshot is retained only for five minutes; expired rows are replaced with `STALE DATA` rather than shown as current. Connections are removed when their effective departure time has passed.
 
 ## Power Considerations
 
@@ -117,13 +136,13 @@ git clone https://github.com/pashol/Stationboard.git
 cd Stationboard
 
 # Build firmware
-pio run
+& "$HOME\.platformio\penv\Scripts\pio.exe" run
 
 # Upload to device (connect via USB)
-pio run -t upload
+& "$HOME\.platformio\penv\Scripts\pio.exe" run -t upload
 
 # Monitor serial output (optional)
-pio device monitor
+& "$HOME\.platformio\penv\Scripts\pio.exe" device monitor
 ```
 
 ## Architecture
@@ -132,7 +151,7 @@ pio device monitor
 src/
 ├── main.cpp          # Entry point, setup/loop, sleep management
 ├── globals.h/cpp     # Configuration struct, constants
-├── stationboard.h/cpp# JSON streaming parser, display rendering
+├── stationboard.h/cpp# Bounded JSON parsing, display rendering
 ├── networking.h/cpp  # WiFiManager, BTC API
 ├── utilities.h/cpp   # Time formatting, brightness, SPIFFS config
 └── ota.h/cpp         # ElegantOTA handling
@@ -143,7 +162,6 @@ src/
 - **TFT_eSPI** - Display driver
 - **WiFiManager** - Captive portal for WiFi setup
 - **ArduinoJson** - JSON parsing
-- **json-streaming-parser** - Memory-efficient API response parsing
 - **ElegantOTA** - Web-based firmware updates
 - **OneButton** - Button handling
 - **Timezone** - DST-aware time handling
