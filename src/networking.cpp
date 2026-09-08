@@ -289,7 +289,6 @@ FetchResult drawBTC() {
     if (!http.begin(client, getBTCAPI)) {
         Serial.println("BTC HTTP setup failed");
         http.end();
-        displayStatus(false);
         return FetchResult::HttpError;
     }
 
@@ -303,19 +302,16 @@ FetchResult drawBTC() {
 
     if (isExpired(requestStarted, millis(), HTTP_TOTAL_TIMEOUT)) {
         result = FetchResult::TimedOut;
-        displayStatus(false);
     } else if (httpCode == HTTP_OK_STATUS) {
         int contentLength = http.getSize();
         if (!isContentLengthAllowed(contentLength, defaultLimits())) {
             result = FetchResult::TooLarge;
-            displayStatus(false);
         } else {
             BoundedStream bounded(http.getStream(), defaultLimits(), requestStarted, httpStreamEof);
             String payload;
             size_t reserveBytes = contentLength >= 0 ? (size_t)contentLength : 1024;
             if (!payload.reserve(reserveBytes)) {
                 result = FetchResult::OutOfMemory;
-                displayStatus(false);
             } else {
                 uint8_t buffer[128];
                 size_t count;
@@ -328,35 +324,25 @@ FetchResult drawBTC() {
                 }
                 if (outOfMemory) {
                     result = FetchResult::OutOfMemory;
-                    displayStatus(false);
                 } else if (bounded.limitReached()) {
                     Serial.printf("BTC response reached byte limit: %d bytes\n", (int)payload.length());
-                    displayStatus(false);
                     result = FetchResult::TooLarge;
                 } else if (bounded.expired()) {
                     Serial.println("BTC response timed out");
-                    displayStatus(false);
                     result = FetchResult::TimedOut;
                 } else if (!bounded.eofReached()) {
                     result = FetchResult::ParseError;
-                    displayStatus(false);
                 } else {
                     String price;
                     bool priceOk = parseBtcPrice(payload, price);
                     result = btcVerdict(httpCode, priceOk);
                     if (priceOk) {
                         bitcoin_price = price;
-                        // Green ONLY on a fully valid price: 200 + invalid JSON is
-                        // failure (ParseError above), never success.
-                        displayStatus(true);
-                    } else {
-                        displayStatus(false);
                     }
                 }
             }
         }
     } else {
-        displayStatus(false);
         result = FetchResult::HttpError;
     }
     
@@ -381,7 +367,6 @@ FetchResult drawBTC() {
     
     Serial.print("Bitcoin Price: ");
     Serial.println(bitcoin_price);
-    // Task 8 replaces this independent status painting with aggregated
-    // transport + BTC refresh status; callers currently ignore the return.
+    // The caller aggregates this optional result with transport status.
     return result;
 }

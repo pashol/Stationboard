@@ -440,6 +440,19 @@ void test_conn_valid_doc_parses() {
     TEST_ASSERT_TRUE_MESSAGE(snap.receivedAt >= before, "receivedAt must be stamped on success");
 }
 
+void test_conn_parses_departure_timestamp_after_2038() {
+    const char* json =
+        "{\"connections\":["
+        "{\"from\":{\"departure\":\"2040-01-01T08:14:00+0200\",\"departureTimestamp\":2200000000,\"delay\":0},"
+        "\"to\":{\"arrival\":\"2040-01-01T09:02:00+0200\"},"
+        "\"duration\":\"00d00:48:00\",\"transfers\":0,\"products\":[\"IC 1\"]}"
+        "]}";
+    ConnectionsSnapshot snap;
+    TEST_ASSERT_TRUE_MESSAGE(parseConnFromString(json, snap), "post-2038 document must parse");
+    TEST_ASSERT_EQUAL_INT64_MESSAGE(INT64_C(2200000000), snap.rows[0].departureTimestamp,
+                                    "departure timestamp must retain all 64 bits");
+}
+
 static const char* CONN_REORDERED_JSON =
     "{\"connections\":["
     "{\"products\":[\"RE 5\"],\"transfers\":2,\"duration\":\"00d00:48:00\","
@@ -824,6 +837,56 @@ void test_btc_price_parse_invalid() {
     TEST_ASSERT_EQUAL_STRING_MESSAGE("KEEP", out.c_str(), "output must be untouched on failure");
 }
 
+// --- Task 8: snapshot freshness and aggregate refresh status ---
+
+void test_stationboard_snapshot_freshness_handles_millis_rollover() {
+    const unsigned long receivedAt = 0xFFFFFFF0UL;
+    const unsigned long now = 0x00000005UL;
+    TEST_ASSERT_TRUE_MESSAGE(isSnapshotFresh(receivedAt, now, 22),
+                             "21ms across rollover must remain fresh before the age limit");
+    TEST_ASSERT_FALSE_MESSAGE(isSnapshotFresh(receivedAt, now, 21),
+                              "the age limit itself must mark a snapshot stale");
+}
+
+void test_connections_snapshot_expires_at_first_effective_departure() {
+    ConnectionsSnapshot snapshot;
+    snapshot.count = 1;
+    snapshot.rows[0].departureTimestamp = 1000;
+    snapshot.rows[0].delay = 2;
+    TEST_ASSERT_FALSE_MESSAGE(connectionsSnapshotExpired(snapshot, 1119),
+                              "connection must remain shown before delayed departure");
+    TEST_ASSERT_TRUE_MESSAGE(connectionsSnapshotExpired(snapshot, 1120),
+                             "connection must clear at delayed departure");
+}
+
+void test_connections_snapshot_expiry_saturates_64_bit_deadline() {
+    ConnectionsSnapshot snapshot;
+    snapshot.count = 1;
+    snapshot.rows[0].departureTimestamp = INT64_MAX - 30;
+    snapshot.rows[0].delay = 1;
+    TEST_ASSERT_FALSE_MESSAGE(connectionsSnapshotExpired(snapshot, INT64_MAX - 1),
+                              "an overflowing delay must not wrap the departure deadline");
+    TEST_ASSERT_TRUE_MESSAGE(connectionsSnapshotExpired(snapshot, INT64_MAX),
+                             "a saturated departure deadline expires at the largest epoch");
+}
+
+void test_empty_connections_snapshot_is_not_expired() {
+    ConnectionsSnapshot snapshot;
+    TEST_ASSERT_FALSE_MESSAGE(connectionsSnapshotExpired(snapshot, 999999),
+                              "a valid empty result remains renderable until the next fetch");
+}
+
+void test_transport_status_ignores_optional_btc_result() {
+    RefreshResult refresh{FetchResult::ParseError, FetchResult::Success, 0};
+    TEST_ASSERT_FALSE_MESSAGE(isTransportFreshResult(refresh.transport),
+                              "BTC success must not turn a failed transport refresh green");
+}
+
+void test_partial_transport_result_is_not_fresh() {
+    TEST_ASSERT_FALSE_MESSAGE(isTransportFreshResult(FetchResult::ParseError),
+                              "a parse error is not a complete transport refresh");
+}
+
 void setup() {
     UNITY_BEGIN();
     RUN_TEST(test_operational_limits_are_bounded);
@@ -840,6 +903,7 @@ void setup() {
     RUN_TEST(test_sb_unicode_escapes_decoded);
     RUN_TEST(test_sb_large_ignored_passlist_succeeds);
     RUN_TEST(test_conn_valid_doc_parses);
+    RUN_TEST(test_conn_parses_departure_timestamp_after_2038);
     RUN_TEST(test_conn_reordered_members_parse);
     RUN_TEST(test_conn_truncated_fails_and_preserves_output);
     RUN_TEST(test_conn_empty_products_skipped);
@@ -863,6 +927,12 @@ void setup() {
     RUN_TEST(test_btc_verdict);
     RUN_TEST(test_btc_price_parse_valid);
     RUN_TEST(test_btc_price_parse_invalid);
+    RUN_TEST(test_stationboard_snapshot_freshness_handles_millis_rollover);
+    RUN_TEST(test_connections_snapshot_expires_at_first_effective_departure);
+    RUN_TEST(test_connections_snapshot_expiry_saturates_64_bit_deadline);
+    RUN_TEST(test_empty_connections_snapshot_is_not_expired);
+    RUN_TEST(test_transport_status_ignores_optional_btc_result);
+    RUN_TEST(test_partial_transport_result_is_not_fresh);
     bool spiffsReady = SPIFFS.begin(false);
     if (!spiffsReady) { spiffsReady = SPIFFS.begin(true); }
     if (!spiffsReady) {

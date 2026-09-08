@@ -263,12 +263,10 @@ void startConfigPortal() {
             tft.fillScreen(TFT_BLUE);
             tft.fillRect(0, tft.height() - 25 , tft.width(), 25, TFT_WHITE);
             drawCurrentTime();
-            if (displayMode == 2) {
-                fetchAndDrawConnections();
-            } else {
-                drawStationboard();
-            }
-            drawBTC();
+            FetchResult transport = displayMode == 2 ? fetchAndDrawConnections() : drawStationboard();
+            FetchResult btc = drawBTC();
+            RefreshResult refresh{transport, btc, millis()};
+            displayStatus(isTransportFreshResult(refresh.transport));
           }
     }
 }

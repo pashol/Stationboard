@@ -11,6 +11,18 @@
 
 #define BUTTON_SLEEP GPIO_NUM_0  // Boot Button
 
+namespace {
+RefreshResult refreshCurrentView() {
+    FetchResult transport = displayMode == 2 ? fetchAndDrawConnections() : drawStationboard();
+    FetchResult btc = drawBTC();
+    RefreshResult refresh{transport, btc, millis()};
+
+    // BTC is optional: its result must not override the transport verdict.
+    displayStatus(isTransportFreshResult(refresh.transport));
+    return refresh;
+}
+}
+
 void lightSleep() {
     Serial.println("Preparing for sleep...");
     
@@ -136,12 +148,7 @@ void setup() {
     // Initial data fetch
     if (WiFi.status() == WL_CONNECTED) {
         drawCurrentTime();
-        if (displayMode == 2) {
-            fetchAndDrawConnections();
-        } else {
-            drawStationboard();
-        }
-        drawBTC();
+        refreshCurrentView();
     }
 
     debugInfo();
@@ -158,6 +165,10 @@ void loop() {
     unsigned long currentMillis = millis();
     static unsigned long updateStartTime = 0;
     static bool isUpdating = false;
+
+    // Expire cached rows independently of WiFi or the refresh scheduler.
+    expireStationboardIfStale(currentMillis);
+    expireConnectionsIfExpired(static_cast<int64_t>(timeClient.getEpochTime()));
     
     // Check night mode state (handles entering/exiting night mode based on time)
     checkNightMode();
@@ -192,12 +203,7 @@ void loop() {
                 // Only update stationboard and BTC if not in night mode or during temporary wake
                 // AND if config portal is not running
                 if ((!nightMode.active || nightMode.temporaryWake || forceRefresh) && !portalRunning) {
-                    if (displayMode == 2) {
-                        fetchAndDrawConnections();
-                    } else {
-                        drawStationboard();
-                    }
-                    drawBTC();
+                    refreshCurrentView();
                     debugInfo();
                     Serial.println("============ End of refresh cycle ==================");
                 }

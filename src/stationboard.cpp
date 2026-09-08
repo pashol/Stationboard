@@ -11,6 +11,25 @@ namespace {
 bool httpStreamEof(Stream& stream) {
     return !static_cast<WiFiClientSecure&>(stream).connected();
 }
+
+StationboardSnapshot currentSnapshots[2];
+bool hasCurrentSnapshot[2] = {false, false};
+
+}
+
+void expireStationboardIfStale(unsigned long now) {
+    if (displayMode == 2) return;
+
+    const int view = displayMode == 0 ? 0 : 1;
+    if (!hasCurrentSnapshot[view] ||
+        isSnapshotFresh(currentSnapshots[view].receivedAt, now, STATIONBOARD_STALE_AFTER_MS)) {
+        return;
+    }
+
+    hasCurrentSnapshot[view] = false;
+    drawStation("STALE DATA");
+    // Directly clear departure rows so low heap cannot retain stale entries.
+    tft.fillRect(0, POS_FIRST, tft.width(), 10 * POS_INC, TFT_BLUE);
 }
 
 void drawTransport(TFT_eSprite& sprite, const Transport& transport, int yPos) {
@@ -115,7 +134,7 @@ void drawStation(const String& station) {
     tft.drawString(station, POS_BUS, 7);
 }
 
-bool drawStationboard() {
+FetchResult drawStationboard() {
     // Cert-validated HTTPS (Task 7): ISRG Root X1 anchors the
     // transport.opendata.ch chain (see tls_certs.h audit). No setInsecure.
     WiFiClientSecure client;
@@ -137,7 +156,7 @@ bool drawStationboard() {
     if (!http.begin(client, url)) {
         Serial.println("Stationboard HTTP setup failed");
         http.end();
-        return false;
+        return result;
     }
     const unsigned long requestStarted = millis();
     int httpCode = http.GET();
@@ -145,12 +164,12 @@ bool drawStationboard() {
         result = FetchResult::TimedOut;
         Serial.printf("Stationboard fetch failed: %d\n", (int)result);
         http.end();
-        return false;
+        return result;
     }
     if (httpCode != HTTP_OK_STATUS) {
         Serial.printf("Stationboard fetch failed: %d\n", (int)result);
         http.end();
-        return false;
+        return result;
     }
     // Reject a known oversized body before parsing; unknown/misreported
     // lengths stay bounded by the BoundedStream byte cap below plus the
@@ -161,7 +180,7 @@ bool drawStationboard() {
         result = FetchResult::TooLarge;
         Serial.printf("Stationboard fetch failed: %d\n", (int)result);
         http.end();
-        return false;
+        return result;
     }
     StationboardSnapshot snapshot;
     BoundedStream bounded(http.getStream(), defaultLimits(), requestStarted, httpStreamEof);
@@ -179,9 +198,12 @@ bool drawStationboard() {
     http.end(); // release fetch memory BEFORE rendering
     if (!ok) {
         Serial.printf("Stationboard fetch failed: %d\n", (int)result);
-        return false; // leave display untouched (stale semantics = Task 8)
+        return result;
     }
-    drawStation(snapshot.station);
-    displayTransports(snapshot);
-    return true;
+    const int view = displayMode == 0 ? 0 : 1;
+    currentSnapshots[view] = snapshot;
+    hasCurrentSnapshot[view] = true;
+    drawStation(currentSnapshots[view].station);
+    displayTransports(currentSnapshots[view]);
+    return FetchResult::Success;
 }

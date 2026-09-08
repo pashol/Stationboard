@@ -6,6 +6,7 @@
 #include <ArduinoJson.h>
 #include <TFT_eSPI.h>
 #include "globals.h"
+#include "http_request.h"
 
 struct Transport {
     String name;
@@ -26,6 +27,22 @@ struct StationboardSnapshot {
     size_t count = 0;
     unsigned long receivedAt = 0;
 };
+
+// Unsigned subtraction remains correct when millis() rolls over.
+inline bool isSnapshotFresh(unsigned long receivedAt, unsigned long now,
+                            unsigned long maxAgeMs) {
+    return (now - receivedAt) < maxAgeMs;
+}
+
+struct RefreshResult {
+    FetchResult transport;
+    FetchResult btc;
+    unsigned long attemptedAt;
+};
+
+inline bool isTransportFreshResult(FetchResult transport) {
+    return transport == FetchResult::Success;
+}
 
 // Parse a stationboard API response from a Stream into a snapshot.
 // Uses a fixed STATIONBOARD_JSON_CAPACITY (8KB) document plus a filter so
@@ -103,6 +120,7 @@ inline bool parseStationboard(Stream& input, StationboardSnapshot& output) {
 void drawTransport(TFT_eSprite& sprite, const Transport& transport, int yPos);
 void displayTransports(const StationboardSnapshot& snapshot);
 void drawStation(const String& station);
-bool drawStationboard();
+FetchResult drawStationboard();
+void expireStationboardIfStale(unsigned long now);
 
 #endif // STATIONBOARD_H

@@ -91,6 +91,9 @@ extern const unsigned long SLEEP_DURATION;
 extern const unsigned long UPDATE_INTERVAL;
 extern const unsigned long UPDATE_DURATION;
 
+// A stationboard snapshot is no longer current after five missed refreshes.
+constexpr unsigned long STATIONBOARD_STALE_AFTER_MS = 5UL * 60000UL;
+
 // Stability limits (Task 1 baseline: fixed capacities for later bounded work)
 constexpr size_t MAX_TRANSPORTS = 10;
 constexpr size_t MAX_CONNECTIONS = 8;

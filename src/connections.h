@@ -6,6 +6,7 @@
 #include <ArduinoJson.h>
 #include <TFT_eSPI.h>
 #include "globals.h"
+#include "http_request.h"
 
 struct Connection {
     String departure;   // "08:14"
@@ -14,7 +15,7 @@ struct Connection {
     String product;     // "IC 1"
     int    transfers = 0;
     int    delay     = 0;
-    long   departureTimestamp = 0;
+    int64_t departureTimestamp = 0;
 };
 
 // Bounded connections snapshot (Task 6). Header-inline (URLEncode
@@ -25,6 +26,22 @@ struct ConnectionsSnapshot {
     size_t count = 0;
     unsigned long receivedAt = 0;
 };
+
+// A valid empty response has no departure deadline and remains displayable.
+inline bool connectionsSnapshotExpired(const ConnectionsSnapshot& snapshot, int64_t now) {
+    if (snapshot.count == 0) return false;
+    const Connection& first = snapshot.rows[0];
+    const int64_t delaySeconds = static_cast<int64_t>(first.delay) * 60;
+    int64_t deadline = first.departureTimestamp;
+    if (delaySeconds > 0 && deadline > INT64_MAX - delaySeconds) {
+        deadline = INT64_MAX;
+    } else if (delaySeconds < 0 && deadline < INT64_MIN - delaySeconds) {
+        deadline = INT64_MIN;
+    } else {
+        deadline += delaySeconds;
+    }
+    return now >= deadline;
+}
 
 // Format an API duration ("00d00:48:00") as "48m"/"1h8m". Multi-day
 // durations fold days into hours ("01d02:30:00" -> "26h30m").
@@ -97,7 +114,7 @@ inline bool parseConnections(Stream& input, ConnectionsSnapshot& output) {
         row.product = products.as<JsonArray>()[0] | "";
         row.transfers = entry["transfers"] | 0;
         row.delay = entry["from"]["delay"] | 0;
-        row.departureTimestamp = entry["from"]["departureTimestamp"] | 0L;
+        row.departureTimestamp = entry["from"]["departureTimestamp"].as<int64_t>();
         tmp.count++;
     }
 
@@ -109,6 +126,7 @@ inline bool parseConnections(Stream& input, ConnectionsSnapshot& output) {
 void drawConnectionsHeader(const String& from, const String& to);
 void drawConnection(TFT_eSprite& sprite, const Connection& conn, int yPos);
 void displayConnections(const ConnectionsSnapshot& snapshot);
-bool fetchAndDrawConnections();
+FetchResult fetchAndDrawConnections();
+void expireConnectionsIfExpired(int64_t now);
 
 #endif // CONNECTIONS_H

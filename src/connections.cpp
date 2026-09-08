@@ -10,6 +10,25 @@ namespace {
 bool httpStreamEof(Stream& stream) {
     return !static_cast<WiFiClientSecure&>(stream).connected();
 }
+
+ConnectionsSnapshot currentSnapshot;
+bool hasCurrentSnapshot = false;
+
+}
+
+void expireConnectionsIfExpired(int64_t now) {
+    if (displayMode != 2 || !hasCurrentSnapshot ||
+        !connectionsSnapshotExpired(currentSnapshot, now)) {
+        return;
+    }
+
+    hasCurrentSnapshot = false;
+    tft.loadFont(AA_FONT_SMALL);
+    tft.setTextColor(TFT_BLACK, TFT_WHITE);
+    tft.fillRect(0, 0, tft.width(), 25, TFT_WHITE);
+    tft.drawString("STALE DATA", POS_BUS, 7);
+    // Directly clear departure rows so low heap cannot retain stale entries.
+    tft.fillRect(0, POS_FIRST, tft.width(), 10 * POS_INC, TFT_BLUE);
 }
 
 // ── Display functions ────────────────────────────────────────────────────────
@@ -109,7 +128,7 @@ void displayConnections(const ConnectionsSnapshot& snapshot) {
     sprite.pushSprite(0, POS_FIRST + (5 * POS_INC));
 }
 
-bool fetchAndDrawConnections() {
+FetchResult fetchAndDrawConnections() {
     // Cert-validated HTTPS (Task 7): ISRG Root X1 anchors the
     // transport.opendata.ch chain (see tls_certs.h audit). No setInsecure.
     WiFiClientSecure client;
@@ -128,7 +147,7 @@ bool fetchAndDrawConnections() {
     if (!http.begin(client, url)) {
         Serial.println("Connections HTTP setup failed");
         http.end();
-        return false;
+        return result;
     }
     const unsigned long requestStarted = millis();
     int httpCode = http.GET();
@@ -136,12 +155,12 @@ bool fetchAndDrawConnections() {
         result = FetchResult::TimedOut;
         Serial.printf("Connections fetch failed: %d\n", (int)result);
         http.end();
-        return false;
+        return result;
     }
     if (httpCode != HTTP_OK_STATUS) {
         Serial.printf("Connections fetch failed: %d\n", (int)result);
         http.end();
-        return false;
+        return result;
     }
     // Reject a known oversized body before parsing; unknown/misreported
     // lengths stay bounded by the BoundedStream byte cap below plus the
@@ -152,7 +171,7 @@ bool fetchAndDrawConnections() {
         result = FetchResult::TooLarge;
         Serial.printf("Connections fetch failed: %d\n", (int)result);
         http.end();
-        return false;
+        return result;
     }
     ConnectionsSnapshot snapshot;
     BoundedStream bounded(http.getStream(), defaultLimits(), requestStarted, httpStreamEof);
@@ -170,9 +189,11 @@ bool fetchAndDrawConnections() {
     http.end(); // release fetch memory BEFORE rendering
     if (!ok) {
         Serial.printf("Connections fetch failed: %d\n", (int)result);
-        return false; // leave display untouched (stale semantics = Task 8)
+        return result;
     }
+    currentSnapshot = snapshot;
+    hasCurrentSnapshot = true;
     drawConnectionsHeader(config.stationId, config.stationId2);
-    displayConnections(snapshot);
-    return true;
+    displayConnections(currentSnapshot);
+    return FetchResult::Success;
 }
