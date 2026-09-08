@@ -9,6 +9,7 @@
 #include "stationboard.h"
 #include "connections.h"
 #include "http_request.h"
+#include "ota.h"
 
 // Test-local definition: pio test links only this TU + libs (src/*.cpp is
 // not linked), so the `config` global referenced by the header-inline
@@ -1030,6 +1031,73 @@ void test_partial_transport_result_is_not_fresh() {
                               "a parse error is not a complete transport refresh");
 }
 
+// --- Task 11: recoverable OTA state machine ---
+
+void test_ota_starts_only_with_credentials_and_without_portal() {
+    TEST_ASSERT_FALSE_MESSAGE(otaCanStart(false, false), "OTA requires configured credentials");
+    TEST_ASSERT_FALSE_MESSAGE(otaCanStart(true, true), "portal owns port 80");
+    TEST_ASSERT_TRUE_MESSAGE(otaCanStart(false, true), "credentialed OTA may own port 80");
+}
+
+void test_ota_activation_awaits_upload() {
+    OtaStateMachine state;
+    otaActivate(state, 100);
+    TEST_ASSERT_EQUAL(static_cast<int>(OtaState::AwaitingUpload), static_cast<int>(state.current));
+    TEST_ASSERT_EQUAL_UINT32(100, state.activatedAt);
+    TEST_ASSERT_EQUAL_UINT32(100, state.lastProgressAt);
+}
+
+void test_ota_uploading_records_progress() {
+    OtaStateMachine state;
+    otaActivate(state, 100);
+    otaUploadStarted(state, 120);
+    otaUploadProgressed(state, 150);
+    TEST_ASSERT_EQUAL(static_cast<int>(OtaState::Uploading), static_cast<int>(state.current));
+    TEST_ASSERT_EQUAL_UINT32(150, state.lastProgressAt);
+}
+
+void test_ota_upload_completion_records_success_and_failure() {
+    OtaStateMachine state;
+    otaActivate(state, 100);
+    otaUploadFinished(state, true);
+    TEST_ASSERT_EQUAL(static_cast<int>(OtaState::Succeeded), static_cast<int>(state.current));
+    otaActivate(state, 200);
+    otaUploadFinished(state, false);
+    TEST_ASSERT_EQUAL(static_cast<int>(OtaState::Failed), static_cast<int>(state.current));
+}
+
+void test_ota_awaiting_upload_times_out() {
+    OtaStateMachine state;
+    otaActivate(state, 100);
+    TEST_ASSERT_TRUE_MESSAGE(otaMustStop(state, 100 + OTA_AWAIT_UPLOAD_TIMEOUT_MS, true),
+                             "an idle OTA page must expire");
+}
+
+void test_ota_upload_stalls_time_out_from_last_progress() {
+    OtaStateMachine state;
+    otaActivate(state, 100);
+    otaUploadStarted(state, 110);
+    otaUploadProgressed(state, 120);
+    TEST_ASSERT_FALSE_MESSAGE(otaMustStop(state, 120 + OTA_UPLOAD_INACTIVITY_TIMEOUT_MS - 1, true),
+                              "recent upload progress remains active");
+    TEST_ASSERT_TRUE_MESSAGE(otaMustStop(state, 120 + OTA_UPLOAD_INACTIVITY_TIMEOUT_MS, true),
+                             "stalled upload must recover");
+}
+
+void test_ota_wifi_loss_forces_recovery() {
+    OtaStateMachine state;
+    otaActivate(state, 100);
+    TEST_ASSERT_TRUE_MESSAGE(otaMustStop(state, 101, false), "WiFi loss must release OTA server");
+}
+
+void test_ota_upload_survives_night_mode_boundary() {
+    OtaStateMachine state;
+    otaActivate(state, 100);
+    otaUploadStarted(state, 110);
+    TEST_ASSERT_FALSE_MESSAGE(otaMustStop(state, 111, true),
+                              "night mode must not stop an in-progress upload");
+}
+
 void setup() {
     UNITY_BEGIN();
     RUN_TEST(test_operational_limits_are_bounded);
@@ -1091,6 +1159,14 @@ void setup() {
     RUN_TEST(test_empty_connections_snapshot_is_not_expired);
     RUN_TEST(test_transport_status_ignores_optional_btc_result);
     RUN_TEST(test_partial_transport_result_is_not_fresh);
+    RUN_TEST(test_ota_starts_only_with_credentials_and_without_portal);
+    RUN_TEST(test_ota_activation_awaits_upload);
+    RUN_TEST(test_ota_uploading_records_progress);
+    RUN_TEST(test_ota_upload_completion_records_success_and_failure);
+    RUN_TEST(test_ota_awaiting_upload_times_out);
+    RUN_TEST(test_ota_upload_stalls_time_out_from_last_progress);
+    RUN_TEST(test_ota_wifi_loss_forces_recovery);
+    RUN_TEST(test_ota_upload_survives_night_mode_boundary);
     bool spiffsReady = SPIFFS.begin(false);
     if (!spiffsReady) { spiffsReady = SPIFFS.begin(true); }
     if (!spiffsReady) {

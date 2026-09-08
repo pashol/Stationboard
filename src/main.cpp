@@ -243,14 +243,12 @@ void loop() {
     // Update night mode display (checks if temporary wake should end)
     updateNightModeDisplay();
     
-    if(portalRunning){
+    if (portalRunning) {
         wm.process();
     }
 
-    // OTA is disabled during night mode
-    if (!nightMode.active) {
-        handleOTA();
-    }
+    // OTA remains serviceable across night-mode transitions while an upload is active.
+    handleOTA();
 
     if (!otaMode) {
         serviceWiFiReconnect(currentMillis);

@@ -77,10 +77,24 @@ Multi-click the button to re-enter the WiFi configuration portal.
 
 ### OTA Updates
 
+OTA is disabled by default. Builds that enable it must set both build-time
+environment variables, without committing their values:
+
+```powershell
+$env:OTA_USERNAME = "your-ota-user"
+$env:OTA_PASSWORD = "a-strong-secret"
+& "$HOME\.platformio\penv\Scripts\pio.exe" run
+```
+
 1. Long press the button for 10 seconds
-2. The device enters OTA mode and displays its IP address
+2. The device enters authenticated OTA mode and displays its IP address
 3. Open a web browser and navigate to `http://<device-ip>/update`
-4. Upload the new firmware binary
+4. Upload the new firmware binary using the configured credentials
+
+The OTA page closes after two minutes without an upload. An upload that makes
+no progress for 30 seconds, fails, or loses WiFi also closes OTA mode. The
+configuration portal and OTA mode are mutually exclusive. Firmware uses two
+0x180000-byte OTA slots, so builds fail if the firmware does not fit in a slot.
 
 ## Power Considerations
 
