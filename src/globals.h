@@ -2,6 +2,7 @@
 #define GLOBALS_H
 
 #include <Arduino.h>
+#include <sys/time.h>
 #include <TFT_eSPI.h>
 #include <WiFiManager.h>
 #include <OneButton.h>
@@ -82,8 +83,13 @@ inline bool isPlausibleEpoch(time_t epoch) {
     return epoch >= PLAUSIBLE_EPOCH_START;
 }
 
-inline bool clockValidityAfterSync(bool wasValid, bool syncSucceeded, time_t epoch) {
-    return wasValid || (syncSucceeded && isPlausibleEpoch(epoch));
+inline timeval timevalFromEpoch(time_t epoch) {
+    return timeval{epoch, 0};
+}
+
+inline bool clockValidityAfterSync(bool wasValid, bool syncSucceeded, time_t epoch,
+                                   bool systemTimeSet) {
+    return wasValid || (syncSucceeded && isPlausibleEpoch(epoch) && systemTimeSet);
 }
 
 inline bool clockRetryDue(unsigned long lastAttempt, unsigned long now) {

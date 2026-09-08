@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <SPIFFS.h>
+#include <sys/time.h>
 #include "globals.h"
 #include "networking.h"
 #include "utilities.h"
@@ -140,13 +141,16 @@ bool updateClock() {
 
     const bool updated = timeClient.update();
     const time_t epoch = timeClient.getEpochTime();
-    clockValid = clockValidityAfterSync(clockValid, updated, epoch);
+    bool systemTimeSet = false;
     if (updated && isPlausibleEpoch(epoch)) {
-        return true;
+        const timeval systemTime = timevalFromEpoch(epoch);
+        systemTimeSet = settimeofday(&systemTime, nullptr) == 0;
     }
+    clockValid = clockValidityAfterSync(clockValid, updated, epoch, systemTimeSet);
+    if (systemTimeSet) return true;
 
-    Serial.printf("Clock update failed: updated=%d epoch=%lld\n", updated,
-                  static_cast<long long>(epoch));
+    Serial.printf("Clock update failed: updated=%d epoch=%lld set=%d\n", updated,
+                  static_cast<long long>(epoch), systemTimeSet);
     return false;
 }
 

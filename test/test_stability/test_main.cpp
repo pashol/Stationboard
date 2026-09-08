@@ -131,9 +131,18 @@ void test_plausible_epoch_requires_2024_or_later() {
 }
 
 void test_failed_clock_sync_keeps_an_invalid_clock_invalid() {
-    TEST_ASSERT_FALSE(clockValidityAfterSync(false, false, PLAUSIBLE_EPOCH_START));
-    TEST_ASSERT_FALSE(clockValidityAfterSync(false, true, PLAUSIBLE_EPOCH_START - 1));
-    TEST_ASSERT_TRUE(clockValidityAfterSync(false, true, PLAUSIBLE_EPOCH_START));
+    TEST_ASSERT_FALSE(clockValidityAfterSync(false, false, PLAUSIBLE_EPOCH_START, false));
+    TEST_ASSERT_FALSE(clockValidityAfterSync(false, true, PLAUSIBLE_EPOCH_START - 1, false));
+    TEST_ASSERT_FALSE(clockValidityAfterSync(false, true, PLAUSIBLE_EPOCH_START, false));
+    TEST_ASSERT_TRUE(clockValidityAfterSync(false, true, PLAUSIBLE_EPOCH_START, true));
+}
+
+void test_epoch_timeval_conversion_has_zero_microseconds() {
+    const time_t epoch = (time_t)1774746000;
+    const timeval timeValue = timevalFromEpoch(epoch);
+
+    TEST_ASSERT_EQUAL_INT64(epoch, timeValue.tv_sec);
+    TEST_ASSERT_EQUAL_INT(0, timeValue.tv_usec);
 }
 
 void test_invalid_clock_disables_night_mode() {
@@ -1113,6 +1122,7 @@ void setup() {
     RUN_TEST(test_refresh_attempt_interval_handles_failed_attempts_and_rollover);
     RUN_TEST(test_plausible_epoch_requires_2024_or_later);
     RUN_TEST(test_failed_clock_sync_keeps_an_invalid_clock_invalid);
+    RUN_TEST(test_epoch_timeval_conversion_has_zero_microseconds);
     RUN_TEST(test_invalid_clock_disables_night_mode);
     RUN_TEST(test_night_schedule_handles_overnight_boundaries);
     RUN_TEST(test_night_schedule_uses_local_time_across_dst_boundaries);
