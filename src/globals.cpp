@@ -3,7 +3,7 @@
 
 static_assert(MAX_TRANSPORTS == 10, "stability limit");
 static_assert(MAX_CONNECTIONS == 8, "stability limit");
-static_assert(MAX_API_RESPONSE_BYTES == 32768, "stability limit");
+static_assert(MAX_API_RESPONSE_BYTES == 65536, "stability limit");
 static_assert(STATIONBOARD_JSON_CAPACITY == 8192, "stability limit");
 static_assert(CONNECTIONS_JSON_CAPACITY == 8192, "stability limit");
 static_assert(MAX_STATION_LENGTH == 150, "portal field length");

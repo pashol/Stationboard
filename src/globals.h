@@ -185,7 +185,7 @@ constexpr unsigned long STATIONBOARD_STALE_AFTER_MS = 5UL * 60000UL;
 // Stability limits (Task 1 baseline: fixed capacities for later bounded work)
 constexpr size_t MAX_TRANSPORTS = 10;
 constexpr size_t MAX_CONNECTIONS = 8;
-constexpr size_t MAX_API_RESPONSE_BYTES = 32768;
+constexpr size_t MAX_API_RESPONSE_BYTES = 65536;
 constexpr size_t STATIONBOARD_JSON_CAPACITY = 8192;
 constexpr size_t CONNECTIONS_JSON_CAPACITY = 8192;
 

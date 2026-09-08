@@ -29,7 +29,7 @@ WiFiManager wm;
 void test_operational_limits_are_bounded() {
     TEST_ASSERT_EQUAL_UINT32(10, MAX_TRANSPORTS);
     TEST_ASSERT_EQUAL_UINT32(8, MAX_CONNECTIONS);
-    TEST_ASSERT_EQUAL_UINT32(32768, MAX_API_RESPONSE_BYTES);
+    TEST_ASSERT_EQUAL_UINT32(65536, MAX_API_RESPONSE_BYTES);
     TEST_ASSERT_EQUAL_UINT32(8192, STATIONBOARD_JSON_CAPACITY);
     TEST_ASSERT_EQUAL_UINT32(8192, CONNECTIONS_JSON_CAPACITY);
 }
@@ -388,20 +388,22 @@ void test_portal_parameters_have_program_lifetime() {
 // StreamString availability in the test core).
 class StringStream : public Stream {
 public:
-    explicit StringStream(const String& s) : data(s), pos(0) {}
-    int available() override { return (int)data.length() - (int)pos; }
+    explicit StringStream(const String& s) : data(&s), pos(0) {}
+    explicit StringStream(const char* s) : owned(s), data(&owned), pos(0) {}
+    int available() override { return (int)data->length() - (int)pos; }
     int read() override {
-        if (pos >= data.length()) return -1;
-        return (unsigned char)data[pos++];
+        if (pos >= data->length()) return -1;
+        return (unsigned char)(*data)[pos++];
     }
     int peek() override {
-        if (pos >= data.length()) return -1;
-        return (unsigned char)data[pos];
+        if (pos >= data->length()) return -1;
+        return (unsigned char)(*data)[pos];
     }
     size_t write(uint8_t) override { return 0; }
-    bool eof() const { return pos >= data.length(); }
+    bool eof() const { return pos >= data->length(); }
 private:
-    String data;
+    String owned;
+    const String* data;
     size_t pos;
 };
 
@@ -548,6 +550,53 @@ void test_sb_large_ignored_passlist_succeeds() {
     TEST_ASSERT_EQUAL_STRING("Bern", snap.station.c_str());
     TEST_ASSERT_EQUAL_UINT(1, snap.count);
     TEST_ASSERT_EQUAL_STRING("Zurich HB", snap.rows[0].destination.c_str());
+}
+
+static String buildOver32KiBPassListJson() {
+    String s = "{\"station\":{\"name\":\"Bern\"},\"stationboard\":["
+               "{\"name\":\"IC 1\",\"category\":\"IC\",\"number\":\"1\","
+               "\"to\":\"Zurich HB\",\"passList\":[";
+    String padding;
+    padding.reserve(220);
+    for (int i = 0; i < 220; i++) padding += 'x';
+    for (int i = 0; i < 150; i++) {
+        if (i > 0) s += ",";
+        s += "{\"station\":{\"name\":\"PaddingStationNumber";
+        s += String(i);
+        s += padding;
+        s += "\"},\"departure\":\"2026-09-07T12:34:00+0200\"}";
+    }
+    s += "],\"stop\":{\"departure\":\"2026-09-07T12:34:00+0200\",\"delay\":null}}]}";
+    return s;
+}
+
+void test_sb_over_32kib_ignored_passlist_requires_new_stream_cap() {
+    String json = buildOver32KiBPassListJson();
+    TEST_ASSERT_TRUE_MESSAGE(json.length() > 32768, "fixture must exceed the legacy stream cap");
+    TEST_ASSERT_TRUE_MESSAGE(json.length() < 65536, "fixture must fit the new stream cap");
+
+    StationboardSnapshot legacySnapshot;
+    StringStream legacyInner(json);
+    RequestLimits legacyLimits{32768, HTTP_TIMEOUT, HTTP_TOTAL_TIMEOUT};
+    BoundedStream legacyBounded(
+        legacyInner, legacyLimits, millis(),
+        [](Stream& source) { return static_cast<StringStream&>(source).eof(); });
+    TEST_ASSERT_FALSE_MESSAGE(parseStationboard(legacyBounded, legacySnapshot),
+                              "legacy 32KiB stream cap must reject the valid truncated body");
+    TEST_ASSERT_TRUE_MESSAGE(legacyBounded.limitReached(), "legacy stream must reach its cap");
+
+    StationboardSnapshot snapshot;
+    StringStream inner(json);
+    BoundedStream bounded(
+        inner, defaultLimits(), millis(),
+        [](Stream& source) { return static_cast<StringStream&>(source).eof(); });
+    bool parsed = parseStationboard(bounded, snapshot);
+    TEST_ASSERT_FALSE_MESSAGE(bounded.limitReached(), "new stream cap must not truncate the body");
+    TEST_ASSERT_FALSE_MESSAGE(bounded.expired(), "new stream cap must not time out while parsing the body");
+    TEST_ASSERT_TRUE_MESSAGE(parsed, "configured stream cap must parse the valid body");
+    TEST_ASSERT_EQUAL_STRING("Bern", snapshot.station.c_str());
+    TEST_ASSERT_EQUAL_UINT(1, snapshot.count);
+    TEST_ASSERT_EQUAL_STRING("Zurich HB", snapshot.rows[0].destination.c_str());
 }
 
 // --- Task 6: bounded connections snapshot parser ---
@@ -1138,6 +1187,7 @@ void setup() {
     RUN_TEST(test_sb_more_than_ten_entries_capped);
     RUN_TEST(test_sb_unicode_escapes_decoded);
     RUN_TEST(test_sb_large_ignored_passlist_succeeds);
+    RUN_TEST(test_sb_over_32kib_ignored_passlist_requires_new_stream_cap);
     RUN_TEST(test_conn_valid_doc_parses);
     RUN_TEST(test_conn_parses_departure_timestamp_after_2038);
     RUN_TEST(test_conn_reordered_members_parse);
