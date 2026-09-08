@@ -38,6 +38,8 @@ const int BACKLIGHT_PIN = TFT_BL;
 
 unsigned long temporaryOnStart = 0;
 const unsigned long TEMP_ON_DURATION = 300000;
+bool clockValid = false;
+unsigned long lastClockAttempt = 0;
 
 // Night mode state
 NightModeState nightMode;

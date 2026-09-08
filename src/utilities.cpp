@@ -109,8 +109,6 @@ String getDayOfWeek() {
 }
 
 void drawCurrentTime() {
-    timeClient.update();
-    
     // Create temporary sprite for time display
     TFT_eSprite timeSprite(&tft);
     timeSprite.setColorDepth(8);
@@ -122,7 +120,11 @@ void drawCurrentTime() {
     
     // Draw time and date
     timeSprite.setTextColor(TFT_BLACK, TFT_WHITE);
-    timeSprite.drawString(getFormattedDateTime(), 4, 5);
+    if (clockValid) {
+        timeSprite.drawString(getFormattedDateTime(), 4, 5);
+    } else {
+        timeSprite.drawString("--:-- - syncing time", 4, 5);
+    }
     
     // Push to bottom of screen
     timeSprite.pushSprite(0, tft.height() - 25);
@@ -307,13 +309,6 @@ bool isWeekend() {
 }
 
 bool isNightModeActive() {
-    if (!config.nightModeEnabled) return false;
-    
-    // Check if weekend should disable night mode
-    if (config.nightModeWeekendDisable && isWeekend()) {
-        return false;
-    }
-    
     time_t utc = timeClient.getEpochTime();
     time_t local = euCET.toLocal(utc);
     int currentHour = hour(local);
@@ -323,13 +318,9 @@ bool isNightModeActive() {
     int startTime = config.nightModeStartHour * 60 + config.nightModeStartMinute;
     int endTime = config.nightModeEndHour * 60 + config.nightModeEndMinute;
     
-    if (startTime < endTime) {
-        // Normal case: e.g., 22:00 to 23:00 (same day)
-        return (currentTime >= startTime && currentTime < endTime);
-    } else {
-        // Crosses midnight: e.g., 22:00 to 07:00
-        return (currentTime >= startTime || currentTime < endTime);
-    }
+    return isNightModeActiveAtLocalTime(clockValid, config.nightModeEnabled,
+                                        config.nightModeWeekendDisable, isWeekend(),
+                                        currentTime, startTime, endTime);
 }
 
 void enterNightMode() {
@@ -388,7 +379,7 @@ void updateNightModeDisplay() {
     if (!nightMode.active || !nightMode.temporaryWake) return;
 
     // Check if temporary wake duration has expired
-    if (millis() - nightMode.wakeStartTime >= NIGHT_WAKE_DURATION) {
+    if (temporaryWakeExpired(nightMode.wakeStartTime, millis(), NIGHT_WAKE_DURATION)) {
         nightMode.temporaryWake = false;
         
         // Turn off display again

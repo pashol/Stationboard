@@ -73,6 +73,55 @@ extern const int BACKLIGHT_PIN;
 // Time management
 extern unsigned long temporaryOnStart;
 extern const unsigned long TEMP_ON_DURATION;
+constexpr time_t PLAUSIBLE_EPOCH_START = (time_t)1704067200; // 2024-01-01 UTC
+constexpr unsigned long CLOCK_RETRY_INTERVAL = 60000;
+extern bool clockValid;
+extern unsigned long lastClockAttempt;
+
+inline bool isPlausibleEpoch(time_t epoch) {
+    return epoch >= PLAUSIBLE_EPOCH_START;
+}
+
+inline bool clockValidityAfterSync(bool wasValid, bool syncSucceeded, time_t epoch) {
+    return wasValid || (syncSucceeded && isPlausibleEpoch(epoch));
+}
+
+inline bool clockRetryDue(unsigned long lastAttempt, unsigned long now) {
+    return now - lastAttempt >= CLOCK_RETRY_INTERVAL;
+}
+
+inline bool isNightModeEligible(bool validClock, bool enabled) {
+    return validClock && enabled;
+}
+
+inline bool isNightScheduleActive(int currentTime, int startTime, int endTime) {
+    if (startTime == endTime) return false;
+    return startTime < endTime
+               ? currentTime >= startTime && currentTime < endTime
+               : currentTime >= startTime || currentTime < endTime;
+}
+
+inline bool isNightModeActiveAtLocalTime(bool validClock, bool enabled,
+                                         bool weekendDisabled, bool weekend,
+                                         int localTime, int startTime, int endTime) {
+    return isNightModeEligible(validClock, enabled) &&
+           !(weekendDisabled && weekend) &&
+           isNightScheduleActive(localTime, startTime, endTime);
+}
+
+inline bool temporaryWakeExpired(unsigned long startTime, unsigned long now,
+                                 unsigned long duration) {
+    return now - startTime >= duration;
+}
+
+enum class WakeSource { Timer, Ext0, WiFi, Other };
+enum class WakeAction { Ignore, Timer, Button };
+
+inline WakeAction wakeActionFor(WakeSource source) {
+    if (source == WakeSource::Timer) return WakeAction::Timer;
+    if (source == WakeSource::Ext0) return WakeAction::Button;
+    return WakeAction::Ignore;
+}
 
 // Night mode state
 struct NightModeState {
@@ -193,6 +242,7 @@ extern WiFiUDP ntpUDP;
 // Function declarations
 void displayStatus(bool isSuccess);
 void lightSleep();
+bool updateClock();
 void checkForConfigReset();
 bool loadConfiguration();
 bool saveConfiguration();

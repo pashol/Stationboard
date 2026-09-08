@@ -31,19 +31,54 @@ void lightSleep() {
 
     if (currentBrightnessIndex > 3 || nightMode.active) {
         // Configure wake-up sources
-        esp_sleep_enable_timer_wakeup(sleepDuration);
-        esp_sleep_enable_ext0_wakeup(BUTTON_SLEEP, 0);
-        esp_sleep_enable_wifi_wakeup();
-        
+        esp_err_t timerResult = esp_sleep_enable_timer_wakeup(sleepDuration);
+        esp_err_t ext0Result = esp_sleep_enable_ext0_wakeup(BUTTON_SLEEP, 0);
+        if (timerResult != ESP_OK || ext0Result != ESP_OK) {
+            Serial.printf("Light sleep setup failed: timer=%d ext0=%d\n", timerResult, ext0Result);
+            esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
+            esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_EXT0);
+            ledcAttachPin(TFT_BL, PWM_CHANNEL);
+            if (!nightMode.active || nightMode.temporaryWake) {
+                updateBrightness();
+            } else {
+                ledcWrite(PWM_CHANNEL, 0);
+            }
+            setCpuFrequencyMhz(80);
+            delay(100);
+            return;
+        }
+        // Timer and button are the intended wake sources; network traffic must not wake us.
+
         Serial.println("Entering light sleep");
         Serial.flush();
-        
-        esp_light_sleep_start();
+
+        esp_err_t sleepResult = esp_light_sleep_start();
+        if (sleepResult != ESP_OK) {
+            Serial.printf("Light sleep start failed: %d\n", sleepResult);
+            ledcAttachPin(TFT_BL, PWM_CHANNEL);
+            if (!nightMode.active || nightMode.temporaryWake) {
+                updateBrightness();
+            } else {
+                ledcWrite(PWM_CHANNEL, 0);
+            }
+            setCpuFrequencyMhz(80);
+            delay(100);
+            return;
+        }
         
         // After waking up
         esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+        WakeSource wakeSource = WakeSource::Other;
+        if (wakeup_reason == ESP_SLEEP_WAKEUP_TIMER) {
+            wakeSource = WakeSource::Timer;
+        } else if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) {
+            wakeSource = WakeSource::Ext0;
+        } else if (wakeup_reason == ESP_SLEEP_WAKEUP_WIFI) {
+            wakeSource = WakeSource::WiFi;
+        }
+        const WakeAction wakeAction = wakeActionFor(wakeSource);
         
-        if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0 && nightMode.active) {
+        if (wakeAction == WakeAction::Button && nightMode.active) {
             nightMode.temporaryWake = true;
             nightMode.wakeStartTime = millis();
         }
@@ -58,11 +93,15 @@ void lightSleep() {
             ledcWrite(PWM_CHANNEL, 0);
         }
         
-        if(wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) {
+        if (wakeAction == WakeAction::Button) {
             Serial.println("Woken up by button");
             button.tick();
-        } else {
+        } else if (wakeAction == WakeAction::Timer) {
             Serial.println("Woken up by timer");
+        } else if (wakeSource == WakeSource::WiFi) {
+            Serial.println("Unexpected WiFi wake; WiFi wake is disabled");
+        } else {
+            Serial.printf("Woken up by unexpected cause: %d\n", wakeup_reason);
         }
     } else {
         Serial.println("No light sleep, reduce CPU frequency");
@@ -91,6 +130,24 @@ void serviceWiFiReconnect(unsigned long now) {
 
     wasConnected = connected;
     connectionStateKnown = true;
+}
+
+bool updateClock() {
+    lastClockAttempt = millis();
+    if (WiFi.status() != WL_CONNECTED) {
+        return false;
+    }
+
+    const bool updated = timeClient.update();
+    const time_t epoch = timeClient.getEpochTime();
+    clockValid = clockValidityAfterSync(clockValid, updated, epoch);
+    if (updated && isPlausibleEpoch(epoch)) {
+        return true;
+    }
+
+    Serial.printf("Clock update failed: updated=%d epoch=%lld\n", updated,
+                  static_cast<long long>(epoch));
+    return false;
 }
 
 void setup() {
@@ -145,6 +202,7 @@ void setup() {
     // Initialize time client (UTC - DST conversion handled by Timezone library)
     timeClient.begin();
     timeClient.setUpdateInterval(3600000); // Update every 60 minutes (3600000)
+    updateClock();
 
     // Keep the offline status rendered by setupWiFiManager until WiFi recovers.
     if (WiFi.status() == WL_CONNECTED) {
@@ -170,6 +228,10 @@ void loop() {
     unsigned long currentMillis = millis();
     static unsigned long updateStartTime = 0;
     static bool isUpdating = false;
+
+    if (clockRetryDue(lastClockAttempt, currentMillis)) {
+        updateClock();
+    }
 
     // Expire cached rows independently of WiFi or the refresh scheduler.
     expireStationboardIfStale(currentMillis);

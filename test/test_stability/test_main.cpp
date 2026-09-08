@@ -2,6 +2,7 @@
 #include <unity.h>
 #include <SPIFFS.h>
 #include <FS.h>
+#include <Timezone.h>
 #include "globals.h"
 #include "utilities.h"
 #include "networking.h"
@@ -118,6 +119,90 @@ void test_refresh_attempt_interval_handles_failed_attempts_and_rollover() {
     TEST_ASSERT_FALSE(shouldAttemptRefresh(1000, 1500, 1000));
     TEST_ASSERT_TRUE(shouldAttemptRefresh(1000, 2000, 1000));
     TEST_ASSERT_TRUE(shouldAttemptRefresh(ULONG_MAX - 500, 499, 1000));
+}
+
+// --- Task 10: clock validity and fail-safe night scheduling ---
+
+void test_plausible_epoch_requires_2024_or_later() {
+    TEST_ASSERT_FALSE(isPlausibleEpoch(0));
+    TEST_ASSERT_FALSE(isPlausibleEpoch((time_t)1704067199));
+    TEST_ASSERT_TRUE(isPlausibleEpoch((time_t)1704067200));
+}
+
+void test_failed_clock_sync_keeps_an_invalid_clock_invalid() {
+    TEST_ASSERT_FALSE(clockValidityAfterSync(false, false, PLAUSIBLE_EPOCH_START));
+    TEST_ASSERT_FALSE(clockValidityAfterSync(false, true, PLAUSIBLE_EPOCH_START - 1));
+    TEST_ASSERT_TRUE(clockValidityAfterSync(false, true, PLAUSIBLE_EPOCH_START));
+}
+
+void test_invalid_clock_disables_night_mode() {
+    TEST_ASSERT_FALSE(isNightModeEligible(false, true));
+    TEST_ASSERT_FALSE(isNightModeEligible(true, false));
+    TEST_ASSERT_TRUE(isNightModeEligible(true, true));
+}
+
+void test_night_schedule_handles_overnight_boundaries() {
+    const int start = 22 * 60;
+    const int end = 7 * 60;
+    TEST_ASSERT_FALSE(isNightScheduleActive(21 * 60 + 59, start, end));
+    TEST_ASSERT_TRUE(isNightScheduleActive(22 * 60, start, end));
+    TEST_ASSERT_TRUE(isNightScheduleActive(6 * 60 + 59, start, end));
+    TEST_ASSERT_FALSE(isNightScheduleActive(7 * 60, start, end));
+    TEST_ASSERT_FALSE(isNightScheduleActive(22 * 60, start, start));
+}
+
+void test_night_schedule_uses_local_time_across_dst_boundaries() {
+    TimeChangeRule cest = {"CEST", Last, Sun, Mar, 2, 120};
+    TimeChangeRule cet = {"CET ", Last, Sun, Oct, 3, 60};
+    Timezone europeZurich(cest, cet);
+
+    const time_t beforeSpringForward = 1774745940; // 2026-03-29 00:59 UTC
+    const time_t afterSpringForward = 1774746000;  // 2026-03-29 01:00 UTC
+    const time_t beforeFallBack = 1792889940;      // 2026-10-25 00:59 UTC
+    const time_t afterFallBack = 1792890000;       // 2026-10-25 01:00 UTC
+
+    TEST_ASSERT_EQUAL(119, hour(europeZurich.toLocal(beforeSpringForward)) * 60 +
+                               minute(europeZurich.toLocal(beforeSpringForward)));
+    TEST_ASSERT_EQUAL(180, hour(europeZurich.toLocal(afterSpringForward)) * 60 +
+                               minute(europeZurich.toLocal(afterSpringForward)));
+    TEST_ASSERT_EQUAL(179, hour(europeZurich.toLocal(beforeFallBack)) * 60 +
+                               minute(europeZurich.toLocal(beforeFallBack)));
+    TEST_ASSERT_EQUAL(120, hour(europeZurich.toLocal(afterFallBack)) * 60 +
+                               minute(europeZurich.toLocal(afterFallBack)));
+}
+
+void test_weekend_disablement_overrides_an_active_night_schedule() {
+    const int start = 22 * 60;
+    const int end = 7 * 60;
+    TEST_ASSERT_FALSE(isNightModeActiveAtLocalTime(true, true, true, true, 23 * 60,
+                                                    start, end));
+    TEST_ASSERT_TRUE(isNightModeActiveAtLocalTime(true, true, true, false, 23 * 60,
+                                                   start, end));
+}
+
+void test_clock_retry_interval_handles_millis_rollover() {
+    TEST_ASSERT_FALSE(clockRetryDue(1000, 1000 + CLOCK_RETRY_INTERVAL - 1));
+    TEST_ASSERT_TRUE(clockRetryDue(1000, 1000 + CLOCK_RETRY_INTERVAL));
+    TEST_ASSERT_TRUE(clockRetryDue(ULONG_MAX - 30000, 29999));
+}
+
+void test_temporary_wake_expiry_handles_millis_rollover() {
+    const unsigned long duration = 30000;
+    TEST_ASSERT_FALSE(temporaryWakeExpired(1000, 1000 + duration - 1, duration));
+    TEST_ASSERT_TRUE(temporaryWakeExpired(1000, 1000 + duration, duration));
+    TEST_ASSERT_FALSE(temporaryWakeExpired(ULONG_MAX - 10000, 19998, duration));
+    TEST_ASSERT_TRUE(temporaryWakeExpired(ULONG_MAX - 10000, 19999, duration));
+}
+
+void test_wake_policy_ignores_wifi_and_unknown_wakes() {
+    TEST_ASSERT_EQUAL(static_cast<int>(WakeAction::Timer),
+                      static_cast<int>(wakeActionFor(WakeSource::Timer)));
+    TEST_ASSERT_EQUAL(static_cast<int>(WakeAction::Button),
+                      static_cast<int>(wakeActionFor(WakeSource::Ext0)));
+    TEST_ASSERT_EQUAL(static_cast<int>(WakeAction::Ignore),
+                      static_cast<int>(wakeActionFor(WakeSource::WiFi)));
+    TEST_ASSERT_EQUAL(static_cast<int>(WakeAction::Ignore),
+                      static_cast<int>(wakeActionFor(WakeSource::Other)));
 }
 
 void setUp(void) {}
@@ -958,6 +1043,15 @@ void setup() {
     RUN_TEST(test_reconnect_due_handles_deadline_wrapping_to_zero);
     RUN_TEST(test_reconnect_success_resets_scheduler);
     RUN_TEST(test_refresh_attempt_interval_handles_failed_attempts_and_rollover);
+    RUN_TEST(test_plausible_epoch_requires_2024_or_later);
+    RUN_TEST(test_failed_clock_sync_keeps_an_invalid_clock_invalid);
+    RUN_TEST(test_invalid_clock_disables_night_mode);
+    RUN_TEST(test_night_schedule_handles_overnight_boundaries);
+    RUN_TEST(test_night_schedule_uses_local_time_across_dst_boundaries);
+    RUN_TEST(test_weekend_disablement_overrides_an_active_night_schedule);
+    RUN_TEST(test_clock_retry_interval_handles_millis_rollover);
+    RUN_TEST(test_temporary_wake_expiry_handles_millis_rollover);
+    RUN_TEST(test_wake_policy_ignores_wifi_and_unknown_wakes);
     RUN_TEST(test_portal_parameters_have_program_lifetime);
     RUN_TEST(test_sb_valid_doc_parses);
     RUN_TEST(test_sb_reordered_members_parse);
