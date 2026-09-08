@@ -91,6 +91,39 @@ extern const unsigned long SLEEP_DURATION;
 extern const unsigned long UPDATE_INTERVAL;
 extern const unsigned long UPDATE_DURATION;
 
+constexpr unsigned long WIFI_RETRY_INITIAL_MS = 1000;
+constexpr unsigned long WIFI_RETRY_MAX_MS = 300000;
+
+struct ReconnectState {
+    unsigned long nextAttemptAt = 0;
+    unsigned long backoffMs = WIFI_RETRY_INITIAL_MS;
+    bool attemptScheduled = false;
+};
+
+inline bool reconnectDue(const ReconnectState& state, unsigned long now) {
+    return !state.attemptScheduled ||
+           static_cast<long>(now - state.nextAttemptAt) >= 0;
+}
+
+inline void recordReconnectFailure(ReconnectState& state, unsigned long now) {
+    state.nextAttemptAt = now + state.backoffMs;
+    state.attemptScheduled = true;
+    state.backoffMs = state.backoffMs >= WIFI_RETRY_MAX_MS / 2
+                          ? WIFI_RETRY_MAX_MS
+                          : state.backoffMs * 2;
+}
+
+inline void recordReconnectSuccess(ReconnectState& state) {
+    state.nextAttemptAt = 0;
+    state.backoffMs = WIFI_RETRY_INITIAL_MS;
+    state.attemptScheduled = false;
+}
+
+inline bool shouldAttemptRefresh(unsigned long lastAttempt, unsigned long now,
+                                 unsigned long interval) {
+    return now - lastAttempt >= interval;
+}
+
 // A stationboard snapshot is no longer current after five missed refreshes.
 constexpr unsigned long STATIONBOARD_STALE_AFTER_MS = 5UL * 60000UL;
 

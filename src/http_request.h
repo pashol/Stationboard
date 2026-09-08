@@ -125,6 +125,10 @@ public:
         return count;
     }
 
+    size_t readBytes(char* buffer, size_t length) override {
+        return readBytes(reinterpret_cast<uint8_t*>(buffer), length);
+    }
+
     size_t write(uint8_t) override { return 0; }
     void flush() override {}
 

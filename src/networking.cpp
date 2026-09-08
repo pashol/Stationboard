@@ -255,10 +255,12 @@ void setupWiFiManager() {
     // Start the configuration portal
     if (!wm.autoConnect("Stationboard_AP")) {
         Serial.println("Failed to connect and hit timeout");
-
-        delay(3000);
-        ESP.restart();
-        delay(5000);
+        tft.fillScreen(TFT_BLACK);
+        tft.loadFont(AA_FONT_SMALL);
+        tft.setTextColor(TFT_RED, TFT_BLACK);
+        tft.drawString("WiFi unavailable", 20, 100);
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.drawString("Continuing offline", 20, 120);
     } else {
         // If you get here you have connected to the WiFi
         tft.drawString("Successfully connected to WiFi network!", 20, 100);

@@ -62,6 +62,64 @@ void test_equal_night_times_disable_schedule() {
     TEST_ASSERT_FALSE(candidate.nightModeEnabled);
 }
 
+// --- Task 9: nonblocking WiFi reconnect scheduling ---
+
+void test_reconnect_state_is_due_initially() {
+    ReconnectState state;
+    TEST_ASSERT_TRUE(reconnectDue(state, 0));
+}
+
+void test_reconnect_failures_use_capped_exponential_backoff() {
+    ReconnectState state;
+    recordReconnectFailure(state, 100);
+    TEST_ASSERT_EQUAL_UINT32(1100, state.nextAttemptAt);
+    TEST_ASSERT_EQUAL_UINT32(2000, state.backoffMs);
+    TEST_ASSERT_TRUE(state.attemptScheduled);
+
+    recordReconnectFailure(state, 1100);
+    TEST_ASSERT_EQUAL_UINT32(3100, state.nextAttemptAt);
+    TEST_ASSERT_EQUAL_UINT32(4000, state.backoffMs);
+
+    state.backoffMs = WIFI_RETRY_MAX_MS;
+    recordReconnectFailure(state, 5000);
+    TEST_ASSERT_EQUAL_UINT32(5000 + WIFI_RETRY_MAX_MS, state.nextAttemptAt);
+    TEST_ASSERT_EQUAL_UINT32(WIFI_RETRY_MAX_MS, state.backoffMs);
+}
+
+void test_reconnect_due_handles_millis_rollover() {
+    ReconnectState state;
+    state.nextAttemptAt = 20;
+    state.attemptScheduled = true;
+    TEST_ASSERT_FALSE(reconnectDue(state, ULONG_MAX - 10));
+    TEST_ASSERT_TRUE(reconnectDue(state, 20));
+}
+
+void test_reconnect_due_handles_deadline_wrapping_to_zero() {
+    ReconnectState state;
+    const unsigned long initialNow = ULONG_MAX - 999;
+    recordReconnectFailure(state, initialNow);
+
+    TEST_ASSERT_EQUAL_UINT32(0, state.nextAttemptAt);
+    TEST_ASSERT_FALSE(reconnectDue(state, initialNow));
+    TEST_ASSERT_TRUE(reconnectDue(state, 0));
+}
+
+void test_reconnect_success_resets_scheduler() {
+    ReconnectState state;
+    state.nextAttemptAt = 12345;
+    state.backoffMs = 4000;
+    recordReconnectSuccess(state);
+    TEST_ASSERT_EQUAL_UINT32(0, state.nextAttemptAt);
+    TEST_ASSERT_EQUAL_UINT32(WIFI_RETRY_INITIAL_MS, state.backoffMs);
+    TEST_ASSERT_FALSE(state.attemptScheduled);
+}
+
+void test_refresh_attempt_interval_handles_failed_attempts_and_rollover() {
+    TEST_ASSERT_FALSE(shouldAttemptRefresh(1000, 1500, 1000));
+    TEST_ASSERT_TRUE(shouldAttemptRefresh(1000, 2000, 1000));
+    TEST_ASSERT_TRUE(shouldAttemptRefresh(ULONG_MAX - 500, 499, 1000));
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -894,6 +952,12 @@ void setup() {
     RUN_TEST(test_config_rejects_empty_stations);
     RUN_TEST(test_config_clamps_numeric_ranges);
     RUN_TEST(test_equal_night_times_disable_schedule);
+    RUN_TEST(test_reconnect_state_is_due_initially);
+    RUN_TEST(test_reconnect_failures_use_capped_exponential_backoff);
+    RUN_TEST(test_reconnect_due_handles_millis_rollover);
+    RUN_TEST(test_reconnect_due_handles_deadline_wrapping_to_zero);
+    RUN_TEST(test_reconnect_success_resets_scheduler);
+    RUN_TEST(test_refresh_attempt_interval_handles_failed_attempts_and_rollover);
     RUN_TEST(test_portal_parameters_have_program_lifetime);
     RUN_TEST(test_sb_valid_doc_parses);
     RUN_TEST(test_sb_reordered_members_parse);

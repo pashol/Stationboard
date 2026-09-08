@@ -72,18 +72,25 @@ void lightSleep() {
 
 }
 
-void reconnectWiFi() {
-    if (WiFi.status() != WL_CONNECTED) {
-        Serial.println("WiFi not connected, reconnecting...");
-        WiFi.disconnect();
-        delay(100);
-        WiFi.reconnect();
-        int attempts = 0;
-        while (WiFi.status() != WL_CONNECTED && attempts < 10) {
-            delay(500);
-            attempts++;
+void serviceWiFiReconnect(unsigned long now) {
+    static ReconnectState reconnectState;
+    static bool connectionStateKnown = false;
+    static bool wasConnected = false;
+    const bool connected = WiFi.status() == WL_CONNECTED;
+
+    if (connected) {
+        recordReconnectSuccess(reconnectState);
+        if (connectionStateKnown && !wasConnected) {
+            forceRefresh = true;
         }
+    } else if (reconnectDue(reconnectState, now)) {
+        Serial.println("WiFi not connected, reconnecting...");
+        WiFi.reconnect();
+        recordReconnectFailure(reconnectState, now);
     }
+
+    wasConnected = connected;
+    connectionStateKnown = true;
 }
 
 void setup() {
@@ -139,14 +146,12 @@ void setup() {
     timeClient.begin();
     timeClient.setUpdateInterval(3600000); // Update every 60 minutes (3600000)
 
-    // Initial Screen Setup
-    tft.fillScreen(TFT_BLUE);
-    tft.fillRect(0, tft.height() - 25 , tft.width(), 25, TFT_WHITE); //footer
-    tft.loadFont(AA_FONT_SMALL);
-    tft.setTextColor(TFT_WHITE, TFT_BLUE);
-
-    // Initial data fetch
+    // Keep the offline status rendered by setupWiFiManager until WiFi recovers.
     if (WiFi.status() == WL_CONNECTED) {
+        tft.fillScreen(TFT_BLUE);
+        tft.fillRect(0, tft.height() - 25 , tft.width(), 25, TFT_WHITE); //footer
+        tft.loadFont(AA_FONT_SMALL);
+        tft.setTextColor(TFT_WHITE, TFT_BLUE);
         drawCurrentTime();
         refreshCurrentView();
     }
@@ -186,13 +191,13 @@ void loop() {
     }
 
     if (!otaMode) {
+        serviceWiFiReconnect(currentMillis);
+
         // Determine update interval based on night mode
         unsigned long currentInterval = nightMode.active ? NIGHT_CHECK_INTERVAL : UPDATE_INTERVAL;
 
-        if (forceRefresh || (!isUpdating && currentMillis - lastUpdate >= currentInterval)) {
+        if (forceRefresh || (!isUpdating && shouldAttemptRefresh(lastUpdate, currentMillis, currentInterval))) {
             if (getCpuFrequencyMhz() != 240) setCpuFrequencyMhz(240); // Set CPU frequency to 240MHz
-
-            reconnectWiFi();
 
             if (WiFi.status() == WL_CONNECTED) {
                 // Update time only when display is allowed to render
@@ -213,6 +218,7 @@ void loop() {
                 forceRefresh = false;
             } else {
                 displayStatus(false);
+                lastUpdate = currentMillis;
                 forceRefresh = false;
             }
         }
