@@ -112,25 +112,13 @@ void lightSleep() {
 
 }
 
-void serviceWiFiReconnect(unsigned long now) {
+void serviceWiFiReconnect() {
     static ReconnectState reconnectState;
-    static bool connectionStateKnown = false;
-    static bool wasConnected = false;
     const bool connected = WiFi.status() == WL_CONNECTED;
 
-    if (connected) {
-        recordReconnectSuccess(reconnectState);
-        if (connectionStateKnown && !wasConnected) {
-            forceRefresh = true;
-        }
-    } else if (reconnectDue(reconnectState, now)) {
-        Serial.println("WiFi not connected, reconnecting...");
-        WiFi.reconnect();
-        recordReconnectFailure(reconnectState, now);
+    if (observeWiFiRecovery(reconnectState, connected)) {
+        forceRefresh = true;
     }
-
-    wasConnected = connected;
-    connectionStateKnown = true;
 }
 
 bool updateClock() {
@@ -197,6 +185,7 @@ void setup() {
 
     // Call WiFiManager setup
     setupWiFiManager();
+    WiFi.setAutoReconnect(true);
     esp_wifi_set_ps(WIFI_PS_NONE); // Disable WiFi power save mode
     
     // Set custom brightness
@@ -255,7 +244,7 @@ void loop() {
     handleOTA();
 
     if (!otaMode) {
-        serviceWiFiReconnect(currentMillis);
+        serviceWiFiReconnect();
 
         // Determine update interval based on night mode
         unsigned long currentInterval = nightMode.active ? NIGHT_CHECK_INTERVAL : UPDATE_INTERVAL;

@@ -74,53 +74,30 @@ void test_equal_night_times_disable_schedule() {
     TEST_ASSERT_FALSE(candidate.nightModeEnabled);
 }
 
-// --- Task 9: nonblocking WiFi reconnect scheduling ---
+// --- Task 9: framework-owned WiFi recovery observation ---
 
-void test_reconnect_state_is_due_initially() {
+void test_reconnect_observer_reports_only_offline_to_connected_transition() {
     ReconnectState state;
-    TEST_ASSERT_TRUE(reconnectDue(state, 0));
+    TEST_ASSERT_FALSE_MESSAGE(observeWiFiRecovery(state, false),
+                              "initial offline state is not a recovery");
+    TEST_ASSERT_FALSE_MESSAGE(observeWiFiRecovery(state, false),
+                              "remaining offline must not trigger recovery");
+    TEST_ASSERT_TRUE_MESSAGE(observeWiFiRecovery(state, true),
+                             "framework reconnection must trigger refresh once");
+    TEST_ASSERT_FALSE_MESSAGE(observeWiFiRecovery(state, true),
+                              "remaining connected must not retrigger refresh");
 }
 
-void test_reconnect_failures_use_capped_exponential_backoff() {
-    ReconnectState state;
-    recordReconnectFailure(state, 100);
-    TEST_ASSERT_EQUAL_UINT32(1100, state.nextAttemptAt);
-    TEST_ASSERT_EQUAL_UINT32(2000, state.backoffMs);
-    TEST_ASSERT_TRUE(state.attemptScheduled);
-
-    recordReconnectFailure(state, 1100);
-    TEST_ASSERT_EQUAL_UINT32(3100, state.nextAttemptAt);
-    TEST_ASSERT_EQUAL_UINT32(4000, state.backoffMs);
-
-    state.backoffMs = WIFI_RETRY_MAX_MS;
-    recordReconnectFailure(state, 5000);
-    TEST_ASSERT_EQUAL_UINT32(5000 + WIFI_RETRY_MAX_MS, state.nextAttemptAt);
-    TEST_ASSERT_EQUAL_UINT32(WIFI_RETRY_MAX_MS, state.backoffMs);
-}
-
-void test_reconnect_due_handles_millis_rollover() {
-    ReconnectState state;
-    state.nextAttemptAt = 20;
-    state.attemptScheduled = true;
-    TEST_ASSERT_FALSE(reconnectDue(state, ULONG_MAX - 10));
-    TEST_ASSERT_TRUE(reconnectDue(state, 20));
-}
-
-void test_reconnect_due_handles_deadline_wrapping_to_zero() {
-    ReconnectState state;
-    const unsigned long initialNow = ULONG_MAX - 999;
-    recordReconnectFailure(state, initialNow);
-
-    TEST_ASSERT_EQUAL_UINT32(0, state.nextAttemptAt);
-    TEST_ASSERT_FALSE(reconnectDue(state, initialNow));
-    TEST_ASSERT_TRUE(reconnectDue(state, 0));
-}
-
-void test_reconnect_success_resets_scheduler() {
+void test_reconnect_observer_resets_scheduler_on_recovery() {
     ReconnectState state;
     state.nextAttemptAt = 12345;
     state.backoffMs = 4000;
-    recordReconnectSuccess(state);
+    state.attemptScheduled = true;
+
+    TEST_ASSERT_FALSE_MESSAGE(observeWiFiRecovery(state, false),
+                              "the offline observation must not recover");
+    TEST_ASSERT_TRUE_MESSAGE(observeWiFiRecovery(state, true),
+                             "a later connected state must recover");
     TEST_ASSERT_EQUAL_UINT32(0, state.nextAttemptAt);
     TEST_ASSERT_EQUAL_UINT32(WIFI_RETRY_INITIAL_MS, state.backoffMs);
     TEST_ASSERT_FALSE(state.attemptScheduled);
@@ -1174,11 +1151,8 @@ void setup() {
     RUN_TEST(test_config_rejects_empty_stations);
     RUN_TEST(test_config_clamps_numeric_ranges);
     RUN_TEST(test_equal_night_times_disable_schedule);
-    RUN_TEST(test_reconnect_state_is_due_initially);
-    RUN_TEST(test_reconnect_failures_use_capped_exponential_backoff);
-    RUN_TEST(test_reconnect_due_handles_millis_rollover);
-    RUN_TEST(test_reconnect_due_handles_deadline_wrapping_to_zero);
-    RUN_TEST(test_reconnect_success_resets_scheduler);
+    RUN_TEST(test_reconnect_observer_reports_only_offline_to_connected_transition);
+    RUN_TEST(test_reconnect_observer_resets_scheduler_on_recovery);
     RUN_TEST(test_refresh_attempt_interval_handles_failed_attempts_and_rollover);
     RUN_TEST(test_plausible_epoch_requires_2024_or_later);
     RUN_TEST(test_failed_clock_sync_keeps_an_invalid_clock_invalid);
