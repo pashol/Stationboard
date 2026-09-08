@@ -38,6 +38,16 @@ void test_url_encode_handles_utf8_bytes() {
     TEST_ASSERT_EQUAL_STRING("Z%C3%BCrich%20HB", URLEncode("Zürich HB").c_str());
 }
 
+void test_stationboard_url_requests_only_parsed_fields() {
+    String url = buildStationboardUrl("Zürich HB", 10, "2026-09-08 12:34");
+    TEST_ASSERT_EQUAL_STRING(
+        "https://transport.opendata.ch/v1/stationboard?id=Z%C3%BCrich%20HB&limit=10&datetime=2026-09-08%2012%3A34"
+        "&fields[]=station/name&fields[]=stationboard/name&fields[]=stationboard/category"
+        "&fields[]=stationboard/number&fields[]=stationboard/to&fields[]=stationboard/stop/departure"
+        "&fields[]=stationboard/stop/delay",
+        url.c_str());
+}
+
 void test_config_rejects_empty_stations() {
     Config candidate;
     candidate.stationId = "";
@@ -1160,6 +1170,7 @@ void setup() {
     UNITY_BEGIN();
     RUN_TEST(test_operational_limits_are_bounded);
     RUN_TEST(test_url_encode_handles_utf8_bytes);
+    RUN_TEST(test_stationboard_url_requests_only_parsed_fields);
     RUN_TEST(test_config_rejects_empty_stations);
     RUN_TEST(test_config_clamps_numeric_ranges);
     RUN_TEST(test_equal_night_times_disable_schedule);

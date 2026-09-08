@@ -7,6 +7,7 @@
 #include <TFT_eSPI.h>
 #include "globals.h"
 #include "http_request.h"
+#include "utilities.h"
 
 struct Transport {
     String name;
@@ -42,6 +43,17 @@ struct RefreshResult {
 
 inline bool isTransportFreshResult(FetchResult transport) {
     return transport == FetchResult::Success;
+}
+
+inline String buildStationboardUrl(const String& stationId, int limit,
+                                   const String& datetime) {
+    return "https://transport.opendata.ch/v1/stationboard?id=" +
+           URLEncode(stationId) + "&limit=" + URLEncode(String(limit)) +
+           "&datetime=" + URLEncode(datetime) +
+           "&fields[]=station/name&fields[]=stationboard/name"
+           "&fields[]=stationboard/category&fields[]=stationboard/number"
+           "&fields[]=stationboard/to&fields[]=stationboard/stop/departure"
+           "&fields[]=stationboard/stop/delay";
 }
 
 // Parse a stationboard API response from a Stream into a snapshot.

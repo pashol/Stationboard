@@ -145,11 +145,10 @@ FetchResult drawStationboard() {
     http.useHTTP10(true);
 
     String currentStationId = (displayMode == 0) ? config.stationId : config.stationId2;
+    String relativeTime = getFormattedTimeRelativeToNow(config.offset);
+    String url = buildStationboardUrl(currentStationId, config.limit, relativeTime);
 
-    String url = "https://transport.opendata.ch/v1/stationboard?id=" +
-                    URLEncode(currentStationId) + "&limit=" + URLEncode(String(config.limit)) +"&datetime=" + URLEncode(getFormattedTimeRelativeToNow(config.offset));
-
-    Serial.println("Relative Time: " + getFormattedTimeRelativeToNow(config.offset));
+    Serial.println("Relative Time: " + relativeTime);
     Serial.print("URL: ");
     Serial.println(url);
     FetchResult result = FetchResult::HttpError;
