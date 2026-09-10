@@ -177,10 +177,6 @@ The parser uses fixed-capacity ArduinoJson documents and bounded HTTP streams to
 - [x] Offline and stale-data handling
 - [ ] OTA over the internet
 
-## Contributing
-
-Issues, improvements, documentation fixes, and pull requests are welcome. For stability-sensitive changes, see [`docs/stability-test-procedure.md`](docs/stability-test-procedure.md).
-
 ## License
 
 StationBoard is released under the [GNU General Public License v3.0](LICENSE).
