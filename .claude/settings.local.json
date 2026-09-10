@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git fetch:*)",
+      "Bash(git pull:*)",
+      "Bash(git merge:*)",
+      "Bash(git push:*)",
+      "Bash(find .pio/build -name *.bin)",
+      "Bash(gh release:*)",
+      "Bash(pio run:*)",
+      "Bash(~/.platformio/penv/Scripts/pio run:*)",
+      "Skill(commit-commands:commit)",
+      "Skill(commit-commands:commit:*)",
+      "WebFetch(domain:transport.opendata.ch)"
+    ]
+  }
+}

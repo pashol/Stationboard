@@ -1,0 +1,485 @@
+Codex should treat this as a full UI refactor, not just a recolor. For an ESP32-2432S028R at 320×240, I would implement the design directly with `TFT_eSPI` unless your current project already uses LVGL. The screen is mostly static text and rectangles, so LVGL adds complexity and memory usage without much benefit.
+
+Give Codex this specification:
+
+> Redesign the existing ESP32-2432S028R departures display into a modern 320×240 embedded UI. Keep all existing networking, API fetching, time/date handling, departure parsing, Bitcoin-price fetching and other application logic unchanged. Replace only the display/rendering layer unless changes are required to support the new layout.
+>
+> Target hardware:
+>
+> * ESP32-2432S028R / CYD
+> * 320×240 landscape TFT
+> * ILI9341-compatible display
+> * ESP32 with limited RAM
+> * Prefer `TFT_eSPI` and its built-in drawing primitives
+> * Do not use large framebuffers
+> * Avoid expensive transparency, shadows, gradients, PNG rendering or desktop-like widgets
+> * Use RGB565-friendly solid colors
+>
+> The interface must look like a modern transport departure board and reproduce the attached concept, while remaining realistic for this hardware.
+
+### Exact screen structure
+
+Use the full physical resolution:
+
+```text
+320 x 240
+x: 0..319
+y: 0..239
+```
+
+The layout should be approximately:
+
+```text
+┌────────────────────────────────────────┐
+│ [train] LUZERN            Abfahrten ● │  0..43
+├────────────────────────────────────────┤
+│ Linie      Abfahrt      Ziel           │ 44..62
+│ S4         18:27        Stansstad      │
+│ IR27       18:30        Basel SBB      │
+│ S9         18:32        Lenzburg       │
+│ IR75       18:35        Konstanz       │ 63..205
+│ S77        18:37        Willisau       │
+│ S44        18:38        Stansstad      │
+│ IR         18:39        St. Gallen     │
+│ S5         18:42        Giswil         │
+├────────────────────────────────────────┤
+│ ◷ 18:25  10 Sep 2026      BTC $76966 │ 206..239
+└────────────────────────────────────────┘
+```
+
+A good coordinate system is:
+
+```cpp
+HEADER_Y       = 0;
+HEADER_H       = 44;
+
+COLUMN_Y       = 44;
+COLUMN_H       = 18;
+
+LIST_Y         = 62;
+ROW_H          = 18;
+MAX_ROWS       = 8;
+
+FOOTER_Y       = 208;
+FOOTER_H       = 32;
+```
+
+Eight rows at 18 px consume 144 px:
+
+```text
+62 + 144 = 206
+```
+
+That fits the screen almost exactly.
+
+### Visual style
+
+Use a dark navy theme rather than pure black.
+
+Suggested palette:
+
+```cpp
+BG            #07162D
+HEADER_BG     #081A36
+ROW_ALT       #0C2242
+DIVIDER       #235481
+
+TEXT_PRIMARY  #F4F8FF
+TEXT_SECONDARY#91AAC9
+
+S_BANNER      #00A6FF
+IR_BANNER     #F02E3A
+STATUS_OK     #67DB62
+```
+
+Codex can define these with `TFT_eSPI::color565()` at initialization rather than repeatedly converting them while drawing.
+
+Do not use gradients. The generated mockup looks slightly dimensional because of the physical LCD and photograph. The software UI itself should remain flat.
+
+### Header
+
+The header needs three logical elements.
+
+Left:
+
+```text
+[train symbol] Luzern
+```
+
+Use either a tiny custom monochrome bitmap for the train icon or a simple line-drawn train icon. Do not load a large image asset.
+
+`Luzern` should be the strongest text on the screen.
+
+Something around:
+
+```cpp
+x = 38
+y = 9
+font height ~= 25 px
+```
+
+Right:
+
+```text
+Abfahrten   WiFi/status
+```
+
+The generated mockup has a Wi-Fi symbol and green status indicator. These should reflect the actual connection state if available.
+
+Do not waste space showing the literal word `WiFi`.
+
+### Column headings
+
+Use:
+
+```text
+Linie      Abfahrt       Ziel
+```
+
+Positions:
+
+```cpp
+LINE_X = 8;
+TIME_X = 89;
+DEST_X = 164;
+```
+
+Use smaller muted text.
+
+For example:
+
+```text
+Linie       14 px
+Abfahrt     14 px
+Ziel        14 px
+```
+
+### Departure rows
+
+Each row consists of three items.
+
+The first column is a colored route badge:
+
+```text
+┌───────┐
+│  S4   │
+└───────┘
+```
+
+Suggested geometry:
+
+```cpp
+badgeX = 8;
+badgeW = 65;
+badgeH = 16;
+```
+
+Do not overuse rounded rectangles. A radius of about `3` is enough.
+
+Use cyan for S-Bahn/local services.
+
+Use red for IR/IC/EC/long-distance services where applicable.
+
+Do not hard-code the color according to the exact service name. Implement a helper:
+
+```cpp
+uint16_t getServiceColor(const String &line);
+```
+
+For example:
+
+```cpp
+S*, RE*, R*       -> blue/cyan
+IR*, IC*, EC*     -> red
+BUS/TRAM          -> configurable alternate color
+unknown           -> muted gray
+```
+
+The route badge should contain centered bold white text.
+
+Time should be visually stronger than the destination:
+
+```text
+18:27
+```
+
+Destination:
+
+```text
+Stansstad
+```
+
+The important hierarchy is:
+
+```text
+route / time > destination > column labels
+```
+
+Alternate the row backgrounds very subtly. Do not draw visible borders around every row.
+
+### Handling long text
+
+This matters on 320×240.
+
+Never let text overlap.
+
+Create an ellipsis helper such as:
+
+```cpp
+String fitTextToWidth(
+    const String &text,
+    int maxWidth,
+    const GFXfont *font
+);
+```
+
+or equivalent for the font system already used.
+
+Example:
+
+```text
+Zürich Flughafen
+```
+
+might become:
+
+```text
+Zürich Flugh...
+```
+
+Measure actual pixel width with `textWidth()` instead of truncating by character count.
+
+### Fonts
+
+Do not use huge custom font collections.
+
+For TFT_eSPI, either use:
+
+```cpp
+FreeSans
+FreeSansBold
+```
+
+in a limited number of sizes, or the existing smooth font mechanism if already configured.
+
+A sensible hierarchy would be approximately:
+
+```text
+Station         24 px bold
+Departure time  18 px bold
+Route           17 px bold
+Destination     17 px regular
+Column labels   13-14 px
+Footer          14-16 px
+```
+
+Do not copy the generated image's apparent pixel size literally because the concept image has been rendered at a much larger photographic resolution.
+
+The actual UI must be designed at 320×240.
+
+### Footer
+
+Separate the footer with one thin cyan/dark-blue horizontal line.
+
+Left:
+
+```text
+clock icon
+18:25
+10 Sep 2026
+```
+
+Right:
+
+```text
+small trend icon
+BTC $76966
+```
+
+Do not give BTC more prominence than the departures.
+
+If Bitcoin data is unavailable, show:
+
+```text
+BTC --
+```
+
+Do not leave stale data indefinitely without indicating failure.
+
+### Efficient redraw strategy
+
+This is important on the ESP32.
+
+Do not call:
+
+```cpp
+tft.fillScreen(...)
+```
+
+every second.
+
+That will produce visible flickering.
+
+Split rendering into areas:
+
+```cpp
+drawStaticUI();
+drawHeader();
+drawDepartures();
+drawFooter();
+```
+
+`drawStaticUI()` should run during startup or when the theme/layout changes.
+
+Only redraw changed content.
+
+For example:
+
+```cpp
+if (departureDataChanged)
+    drawDepartures();
+
+if (minuteChanged)
+    drawClock();
+
+if (btcPriceChanged)
+    drawBtcPrice();
+
+if (wifiStateChanged)
+    drawWifiStatus();
+```
+
+For individual areas, first erase only the relevant rectangle with its background color, then redraw its contents.
+
+### Optional sprite buffering
+
+For smooth updates, use a `TFT_eSprite`, but only for small regions.
+
+Good:
+
+```text
+one departure row
+footer
+header status area
+```
+
+Avoid allocating a full 320×240 16-bit sprite.
+
+A full framebuffer consumes roughly:
+
+```text
+320 × 240 × 2 = 153,600 bytes
+```
+
+which is unnecessary for this interface.
+
+A row sprite:
+
+```text
+320 × 18 × 2 ≈ 11 KB
+```
+
+is much more reasonable.
+
+### Code structure
+
+Codex should move all rendering into a dedicated UI module instead of keeping dozens of `drawString()` calls in the main loop.
+
+Something like:
+
+```cpp
+class DepartureUI {
+public:
+    void begin(TFT_eSPI &display);
+
+    void drawStaticLayout();
+
+    void updateStation(const String &station);
+    void updateDepartures(
+        const Departure *departures,
+        size_t count
+    );
+
+    void updateClock(
+        const DateTime &time
+    );
+
+    void updateBitcoin(
+        float value,
+        bool valid
+    );
+
+    void updateConnection(
+        bool wifiConnected
+    );
+
+private:
+    TFT_eSPI *tft;
+
+    void drawHeader();
+    void drawColumnHeaders();
+    void drawDepartureRow(
+        int row,
+        const Departure &departure
+    );
+    void drawFooter();
+
+    uint16_t serviceColor(
+        const String &service
+    );
+
+    String truncateToWidth(
+        const String &text,
+        int maxWidth
+    );
+};
+```
+
+The data model can stay simple:
+
+```cpp
+struct Departure {
+    String line;
+    String time;
+    String destination;
+};
+```
+
+This separation is important. API/data code should know nothing about pixel coordinates.
+
+### Behaviour with fewer or more departures
+
+If fewer than eight departures exist, blank the unused rows.
+
+If more than eight exist, show only the next eight.
+
+Do not scroll automatically. Automatic scrolling on a small information screen makes it harder to read.
+
+Touch support is not necessary for the main screen.
+
+If touch is already implemented, a useful future interaction would be switching between nearby stations or detailed departure information, but it should not be required for this redesign.
+
+### Acceptance criteria for Codex
+
+The finished screen should:
+
+```text
+render natively at 320x240
+show eight readable departures
+never overlap text
+show route badges
+use no full-screen framebuffer
+avoid visible flicker during clock updates
+avoid full-screen redraws every second
+keep network/API functionality unchanged
+work without PSRAM
+use only lightweight drawing operations
+remain readable from approximately 1 metre
+compile for ESP32-2432S028R
+```
+
+The most important instruction to Codex is this:
+
+> Do not recreate the generated image pixel-for-pixel. Recreate its visual hierarchy and style within a genuine 320×240 embedded layout. Optimize for readability, low RAM usage and flicker-free partial redraws.
+
+For this particular screen, `TFT_eSPI + a small number of custom helper functions` is the implementation I would choose over LVGL.

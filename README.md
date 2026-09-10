@@ -19,13 +19,14 @@ Bring the train station display to your home or office! Get accurate departure t
 ## Features
 
 - **Real-time departures** from Swiss public transport (trains, buses, trams, boats)
-- **Station and connections views** - cycle station 1, station 2, and optionally a configured journey view
+- **Station and connections views** - cycle station 1, station 2, and an optional connections view between them
 - **5 brightness levels** including a power-saving sleep mode
 - **BTC price ticker** in the footer
 - **Authenticated OTA firmware updates** - opt-in at build time, then update wirelessly via web browser
 - **WiFi configuration portal** - easy setup via smartphone
-- **Automatic time sync** with NTP (handles DST)
-- **Night mode** - automatic power saving from 22:00 to 06:00
+- **Automatic time sync** with NTP and Swiss daylight-saving time handling
+- **Configurable night mode** - automatic power saving on a custom schedule, optionally disabled on weekends
+- **Offline and stale-data handling** - failed refreshes do not replace valid data, and expired data is clearly marked
 
 ![StationBoard Display](img/stationboard.jpg)
 
@@ -52,18 +53,18 @@ Use my [dedicated page](https://stationboard-uploader.vercel.app/) to flash the 
 ### Initial Setup
 
 1. Power on the device
-2. If no WiFi is configured, it creates an access point named **"Stationboard-AP"** and displays connection instructions on screen
+2. If no WiFi is configured, it creates an access point named **"Stationboard_AP"** and displays connection instructions on screen
 3. Connect to this AP with your smartphone
 4. A captive portal opens where you can:
    - Select your WiFi network and enter credentials
     - Set **Station 1** and **Station 2** names (e.g., "Zürich HB", "Bern")
-    - Enable connections mode and configure its destination and walking offset when needed
-   - Configure the number of departures to display
-   - Set default brightness level
+    - Enable or disable connections mode between Station 1 and Station 2
+    - Configure the number of departures and stationboard time offset
+    - Set default brightness and night mode schedule
 
 ### Reconfiguring WiFi
 
-Triple-click the button to open or close the WiFi configuration portal. The portal cannot open during OTA mode, and it is unavailable while the display is asleep for night mode unless temporarily woken.
+Triple-click the button to open or close the WiFi configuration portal. The portal cannot open during OTA mode or while night mode is fully dark. A single click temporarily wakes the display during night mode, allowing the portal to be opened.
 
 ## Usage
 
@@ -71,10 +72,10 @@ Triple-click the button to open or close the WiFi configuration portal. The port
 
 | Action | Function |
 |--------|----------|
-| **Single click** | Cycle through brightness levels (0-4) |
+| **Single click** | Cycle through brightness levels (0-4); temporarily wake the display during night mode |
 | **Double click** | Cycle Station 1, Station 2, and connections mode when enabled |
 | **Triple click** | Open or close WiFi configuration portal |
-| **Long press (10s)** | Enter OTA firmware update mode |
+| **Long press (10s)** | Enter OTA firmware update mode when OTA credentials were configured at build time |
 
 ### OTA Updates
 
@@ -87,15 +88,17 @@ $env:OTA_PASSWORD = "a-strong-secret"
 & "$HOME\.platformio\penv\Scripts\pio.exe" run
 ```
 
-1. Long press the button for 10 seconds
-2. The device enters authenticated OTA mode and displays its IP address
-3. Open a web browser and navigate to `http://<device-ip>/update`
-4. Upload the new firmware binary using the configured credentials
+1. Build the firmware with both `OTA_USERNAME` and `OTA_PASSWORD` environment variables set
+2. Long press the button for 10 seconds
+3. The device enters authenticated OTA mode and displays its IP address
+4. Open a web browser and navigate to `http://<device-ip>/update`
+5. Upload the new firmware binary using the configured credentials
 
 The OTA page closes after two minutes without an upload. An upload that makes
 no progress for 30 seconds, fails, or loses WiFi also closes OTA mode. The
 configuration portal and OTA mode are mutually exclusive. Firmware uses two
-1.5 MB OTA slots, so builds fail if the firmware does not fit in a slot.
+1.5 MB OTA slots, so builds fail if the firmware does not fit in a slot. OTA
+credentials are injected by `scripts/ota_credentials.py`; never commit them.
 
 ### Offline and Stale Data
 
@@ -128,14 +131,14 @@ Based on the provided power consumption data for the ESP32 and the LCD backlight
 
 These estimates assume linear scaling of backlight power consumption with PWM duty cycle. The actual power draw may vary based on the specific characteristics of the LCD and the ESP32-2432S028R.
 
-### Build and Upload
+## Build and Upload
 
-```bash
+```powershell
 # Clone the repository
 git clone https://github.com/pashol/Stationboard.git
 cd Stationboard
 
-# Build firmware
+# Build firmware (OTA is disabled unless credentials are set)
 & "$HOME\.platformio\penv\Scripts\pio.exe" run
 
 # Upload to device (connect via USB)
@@ -149,12 +152,14 @@ cd Stationboard
 
 ```
 src/
-├── main.cpp          # Entry point, setup/loop, sleep management
-├── globals.h/cpp     # Configuration struct, constants
-├── stationboard.h/cpp# Bounded JSON parsing, display rendering
-├── networking.h/cpp  # WiFiManager, BTC API
-├── utilities.h/cpp   # Time formatting, brightness, SPIFFS config
-└── ota.h/cpp         # ElegantOTA handling
+├── main.cpp             # Entry point, refresh loop, WiFi recovery, sleep management
+├── globals.h/cpp        # Configuration struct, constants, shared state
+├── stationboard.h/cpp   # Bounded stationboard parsing and display rendering
+├── connections.h/cpp    # Bounded connections parsing and display rendering
+├── networking.h/cpp     # WiFiManager portal and BTC API
+├── utilities.h/cpp      # Time formatting, brightness, persistence, night mode
+├── http_request.h       # Bounded HTTP response handling
+└── ota.h/cpp            # Authenticated ElegantOTA handling
 ```
 
 ### Key Libraries
@@ -164,23 +169,24 @@ src/
 - **ArduinoJson** - JSON parsing
 - **ElegantOTA** - Web-based firmware updates
 - **OneButton** - Button handling
-- **Timezone** - DST-aware time handling
+- **Timezone** - Swiss DST-aware time handling
 
 ## APIs Used
 
 - [Swiss Transport API](https://transport.opendata.ch/) - Real-time departure data
-- BTC price API - Cryptocurrency ticker
+- [Swiss Transport connections API](https://transport.opendata.ch/) - Journey connections between the configured stations
+- [Coinbase BTC price API](https://docs.cloud.coinbase.com/sign-in-with-coinbase/docs/api-prices) - Cryptocurrency ticker
 
 ## Roadmap
 
 - [x] Second station support (double click)
 - [x] OTA firmware updates (long press)
 - [x] Distance to station as parameter
+- [x] Connections mode between Station 1 and Station 2
 - [x] Code refactoring
 - [x] Power savings
 - [x] Fixing sprite issues (low memory)
-- [x] Night mode (automatic time-based activation, 22:00-06:00)
-- [ ] From-To-Stationboard
+- [x] Configurable night mode with optional weekend disable
 - [ ] OTA over internet
 
 ## Contributing
