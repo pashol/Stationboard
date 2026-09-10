@@ -265,8 +265,13 @@ void startConfigPortal() {
             tft.fillScreen(TFT_BLUE);
             tft.fillRect(0, tft.height() - 25 , tft.width(), 25, TFT_WHITE);
             drawCurrentTime();
-            FetchResult transport = displayMode == 2 ? fetchAndDrawConnections() : drawStationboard();
             FetchResult btc = drawBTC();
+            if (displayMode != 2) stationboardRetry = StationboardRetryState{};
+            FetchResult transport = displayMode == 2 ? fetchAndDrawConnections()
+                                                      : drawStationboard(stationboardLimits(stationboardRetry));
+            if (displayMode != 2) {
+                recordStationboardResult(stationboardRetry, isTransportFreshResult(transport), millis());
+            }
             RefreshResult refresh{transport, btc, millis()};
             displayStatus(isTransportFreshResult(refresh.transport));
           }
@@ -288,6 +293,12 @@ void switchStation() {
     int maxModes = config.connectionsEnabled ? 3 : 2;
     displayMode = (displayMode + 1) % maxModes;
     Serial.println("Switched to display mode: " + String(displayMode));
+    if (displayMode == 2) {
+        renderConnectionsCache();
+    } else {
+        renderStationboardCache();
+    }
+    displayStatus(false);
     forceRefresh = true;
 }
 

@@ -18,18 +18,16 @@ bool hasCurrentSnapshot[2] = {false, false};
 }
 
 void expireStationboardIfStale(unsigned long now) {
-    if (displayMode == 2) return;
+    if (displayMode == 2 || !clockValid) return;
 
     const int view = displayMode == 0 ? 0 : 1;
     if (!hasCurrentSnapshot[view] ||
-        isSnapshotFresh(currentSnapshots[view].receivedAt, now, STATIONBOARD_STALE_AFTER_MS)) {
+        !pruneStationboardSnapshot(currentSnapshots[view], static_cast<int64_t>(timeClient.getEpochTime()))) {
         return;
     }
 
-    hasCurrentSnapshot[view] = false;
-    drawStation("STALE DATA");
-    // Directly clear departure rows so low heap cannot retain stale entries.
-    tft.fillRect(0, POS_FIRST, tft.width(), 10 * POS_INC, TFT_BLUE);
+    drawStation(currentSnapshots[view].station);
+    displayTransports(currentSnapshots[view]);
 }
 
 void drawTransport(TFT_eSprite& sprite, const Transport& transport, int yPos) {
@@ -93,7 +91,7 @@ void displayTransports(const StationboardSnapshot& snapshot) {
     // Null-named rows are skipped per-row inside drawTransport; no copied
     // vector is built here. Loops are bounded to snapshot.count (which never
     // exceeds MAX_TRANSPORTS by the parser contract).
-    size_t count = snapshot.count <= MAX_TRANSPORTS ? snapshot.count : MAX_TRANSPORTS;
+    size_t count = stationboardVisibleCount(snapshot, config.limit);
 
     // Print table header
     Serial.println("+--------+---------------------------+-------+------+");
@@ -134,19 +132,28 @@ void drawStation(const String& station) {
     tft.drawString(station, POS_BUS, 7);
 }
 
-FetchResult drawStationboard() {
-    // Cert-validated HTTPS (Task 7): ISRG Root X1 anchors the
-    // transport.opendata.ch chain (see tls_certs.h audit). No setInsecure.
+void renderStationboardCache() {
+    const int view = displayMode == 0 ? 0 : 1;
+    if (!hasCurrentSnapshot[view]) {
+        drawStation(view == 0 ? config.stationId : config.stationId2);
+        tft.fillRect(0, POS_FIRST, tft.width(), 10 * POS_INC, TFT_BLUE);
+        return;
+    }
+    drawStation(currentSnapshots[view].station);
+    displayTransports(currentSnapshots[view]);
+}
+
+FetchResult drawStationboard(const RequestLimits& limits) {
     WiFiClientSecure client;
     client.setCACert(TLS_TRANSPORT_ROOT_CA);
     HTTPClient http;
-    http.setConnectTimeout(HTTP_TIMEOUT);
-    http.setTimeout(HTTP_TIMEOUT);
+    http.setConnectTimeout(limits.inactivityMs);
+    http.setTimeout(limits.inactivityMs);
     http.useHTTP10(true);
 
     String currentStationId = (displayMode == 0) ? config.stationId : config.stationId2;
     String relativeTime = getFormattedTimeRelativeToNow(config.offset);
-    String url = buildStationboardUrl(currentStationId, config.limit, relativeTime);
+    String url = buildStationboardUrl(currentStationId, stationboardRequestLimit(config.limit), relativeTime);
 
     Serial.println("Relative Time: " + relativeTime);
     Serial.print("URL: ");
@@ -159,13 +166,14 @@ FetchResult drawStationboard() {
     }
     const unsigned long requestStarted = millis();
     int httpCode = http.GET();
-    if (isExpired(requestStarted, millis(), HTTP_TOTAL_TIMEOUT)) {
+    if (isExpired(requestStarted, millis(), limits.totalMs)) {
         result = FetchResult::TimedOut;
         Serial.printf("Stationboard fetch failed: %d\n", (int)result);
         http.end();
         return result;
     }
     if (httpCode != HTTP_OK_STATUS) {
+        Serial.printf("Stationboard HTTP status: %d\n", httpCode);
         Serial.printf("Stationboard fetch failed: %d\n", (int)result);
         http.end();
         return result;
@@ -174,7 +182,7 @@ FetchResult drawStationboard() {
     // lengths stay bounded by the BoundedStream byte cap below plus the
     // fixed 8KB document + filter.
     int contentLength = http.getSize();
-    if (!isContentLengthAllowed(contentLength, defaultLimits())) {
+    if (!isContentLengthAllowed(contentLength, limits)) {
         Serial.printf("Stationboard response too large: %d bytes\n", contentLength);
         result = FetchResult::TooLarge;
         Serial.printf("Stationboard fetch failed: %d\n", (int)result);
@@ -182,7 +190,7 @@ FetchResult drawStationboard() {
         return result;
     }
     StationboardSnapshot snapshot;
-    BoundedStream bounded(http.getStream(), defaultLimits(), requestStarted, httpStreamEof);
+    BoundedStream bounded(http.getStream(), limits, requestStarted, httpStreamEof);
     bool ok = parseStationboard(bounded, snapshot);
     if (ok) ok = consumeToEnd(bounded);
     if (ok) {

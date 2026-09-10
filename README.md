@@ -99,7 +99,7 @@ configuration portal and OTA mode are mutually exclusive. Firmware uses two
 
 ### Offline and Stale Data
 
-When WiFi is unavailable, the display reports an offline/red status and reconnects automatically. A stationboard snapshot is retained only for five minutes; expired rows are replaced with `STALE DATA` rather than shown as current. Connections are removed when their effective departure time has passed.
+When WiFi is unavailable, the display keeps the last valid departures and shows a red status dot while it reconnects automatically. Departed rows are removed at their effective departure times, and cached reserve departures move into view. Connections are also removed when their effective departure time has passed.
 
 ## Power Considerations
 

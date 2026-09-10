@@ -1,7 +1,7 @@
 #include "globals.h"
 #include <WiFiUDP.h>
 
-static_assert(MAX_TRANSPORTS == 10, "stability limit");
+static_assert(MAX_TRANSPORTS == 15, "stability limit");
 static_assert(MAX_CONNECTIONS == 8, "stability limit");
 static_assert(MAX_API_RESPONSE_BYTES == 65536, "stability limit");
 static_assert(STATIONBOARD_JSON_CAPACITY == 8192, "stability limit");
@@ -46,6 +46,7 @@ NightModeState nightMode;
 const unsigned long NIGHT_WAKE_DURATION = 30000; // 30 seconds
 const unsigned long NIGHT_CHECK_INTERVAL = 300000; // 5 minutes
 bool forceRefresh = false;
+StationboardRetryState stationboardRetry;
 
 unsigned long previousMillis = 0;
 const unsigned long SLEEP_DURATION = 57000000;    // 57 seconds (57,000,000 µs)

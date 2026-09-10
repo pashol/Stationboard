@@ -43,6 +43,12 @@ extern const unsigned long HTTP_TIMEOUT;
 // connect + headers + body must finish inside this window, measured with
 // rollover-safe unsigned millis() subtraction (see isExpired()).
 constexpr unsigned long HTTP_TOTAL_TIMEOUT = 30000;
+constexpr unsigned long STATIONBOARD_HTTP_TIMEOUT = 15000;
+constexpr unsigned long STATIONBOARD_HTTP_TOTAL_TIMEOUT = 20000;
+constexpr unsigned long STATIONBOARD_LONG_HTTP_TIMEOUT = 60000;
+constexpr unsigned long STATIONBOARD_LONG_HTTP_TOTAL_TIMEOUT = 90000;
+constexpr unsigned long STATIONBOARD_LONG_RETRY_DELAY = 60000;
+constexpr unsigned long STATIONBOARD_COOLDOWN_DELAY = 300000;
 extern const char* getBTCAPI;
 
 // Position constants
@@ -77,6 +83,7 @@ extern unsigned long temporaryOnStart;
 extern const unsigned long TEMP_ON_DURATION;
 constexpr time_t PLAUSIBLE_EPOCH_START = (time_t)1704067200; // 2024-01-01 UTC
 constexpr unsigned long CLOCK_RETRY_INTERVAL = 60000;
+constexpr unsigned long CLOCK_SYNC_INTERVAL = 3600000;
 extern bool clockValid;
 extern unsigned long lastClockAttempt;
 
@@ -95,6 +102,11 @@ inline bool clockValidityAfterSync(bool wasValid, bool syncSucceeded, time_t epo
 
 inline bool clockRetryDue(unsigned long lastAttempt, unsigned long now) {
     return now - lastAttempt >= CLOCK_RETRY_INTERVAL;
+}
+
+inline bool clockUpdateDue(bool validClock, unsigned long lastAttempt, unsigned long now) {
+    const unsigned long interval = validClock ? CLOCK_SYNC_INTERVAL : CLOCK_RETRY_INTERVAL;
+    return now - lastAttempt >= interval;
 }
 
 inline bool isNightModeEligible(bool validClock, bool enabled) {
@@ -130,6 +142,10 @@ inline WakeAction wakeActionFor(WakeSource source) {
     return WakeAction::Ignore;
 }
 
+inline bool shouldRecoverWiFiAfterWake(WakeAction action) {
+    return action == WakeAction::Timer;
+}
+
 // Night mode state
 struct NightModeState {
     bool active = false;
@@ -148,7 +164,7 @@ extern const unsigned long UPDATE_INTERVAL;
 extern const unsigned long UPDATE_DURATION;
 
 constexpr unsigned long WIFI_RETRY_INITIAL_MS = 1000;
-constexpr unsigned long WIFI_RETRY_MAX_MS = 300000;
+constexpr unsigned long WIFI_RETRY_MAX_MS = 60000;
 
 struct ReconnectState {
     unsigned long nextAttemptAt = 0;
@@ -192,24 +208,73 @@ inline bool observeWiFiRecovery(ReconnectState& state, bool connected) {
     return recovered;
 }
 
+inline bool observeWiFiDisconnect(const ReconnectState& state, bool connected) {
+    return state.connectionStateKnown && state.wasConnected && !connected;
+}
+
 inline bool shouldAttemptRefresh(unsigned long lastAttempt, unsigned long now,
                                  unsigned long interval) {
     return now - lastAttempt >= interval;
 }
 
 inline bool shouldRetryForcedRefresh(bool wasForced, bool transportFresh) {
-    return wasForced && !transportFresh;
+    return false;
 }
 
-// A stationboard snapshot is no longer current after five missed refreshes.
-constexpr unsigned long STATIONBOARD_STALE_AFTER_MS = 5UL * 60000UL;
+enum class StationboardRetryMode { Normal, LongRetry, Cooldown };
+
+struct StationboardRetryState {
+    StationboardRetryMode mode = StationboardRetryMode::Normal;
+    unsigned long nextAttemptAt = 0;
+};
+
+inline bool stationboardRetryDue(const StationboardRetryState& state, unsigned long now) {
+    return state.mode == StationboardRetryMode::Normal ||
+           static_cast<long>(now - state.nextAttemptAt) >= 0;
+}
+
+inline void beginStationboardAttempt(StationboardRetryState& state, unsigned long now) {
+    if (state.mode == StationboardRetryMode::Cooldown && stationboardRetryDue(state, now)) {
+        state = StationboardRetryState{};
+    }
+}
+
+inline void recordStationboardResult(StationboardRetryState& state, bool succeeded,
+                                     unsigned long now) {
+    if (succeeded) {
+        state = StationboardRetryState{};
+    } else if (state.mode == StationboardRetryMode::Normal) {
+        state.mode = StationboardRetryMode::LongRetry;
+        state.nextAttemptAt = now + STATIONBOARD_LONG_RETRY_DELAY;
+    } else if (state.mode == StationboardRetryMode::LongRetry) {
+        state.mode = StationboardRetryMode::Cooldown;
+        state.nextAttemptAt = now + STATIONBOARD_COOLDOWN_DELAY;
+    } else {
+        state.mode = StationboardRetryMode::Normal;
+        state.nextAttemptAt = 0;
+    }
+}
+
+extern StationboardRetryState stationboardRetry;
 
 // Stability limits (Task 1 baseline: fixed capacities for later bounded work)
-constexpr size_t MAX_TRANSPORTS = 10;
+constexpr size_t MAX_TRANSPORTS = 15;
+constexpr size_t STATIONBOARD_CACHE_RESERVE = 5;
 constexpr size_t MAX_CONNECTIONS = 8;
 constexpr size_t MAX_API_RESPONSE_BYTES = 65536;
 constexpr size_t STATIONBOARD_JSON_CAPACITY = 8192;
 constexpr size_t CONNECTIONS_JSON_CAPACITY = 8192;
+
+inline int64_t effectiveDepartureTimestamp(int64_t departureTimestamp, int delayMinutes) {
+    const int64_t delaySeconds = static_cast<int64_t>(delayMinutes) * 60;
+    if (delaySeconds > 0 && departureTimestamp > INT64_MAX - delaySeconds) {
+        return INT64_MAX;
+    }
+    if (delaySeconds < 0 && departureTimestamp < INT64_MIN - delaySeconds) {
+        return INT64_MIN;
+    }
+    return departureTimestamp + delaySeconds;
+}
 
 // Configuration bounds (Task 2: single validation path for flash + portal ingress)
 // MAX_STATION_LENGTH matches the WiFiManager portal field length for station IDs.

@@ -31,18 +31,23 @@ struct ConnectionsSnapshot {
 inline bool connectionsSnapshotExpired(const ConnectionsSnapshot& snapshot, int64_t now) {
     if (snapshot.count == 0) return false;
     const Connection& first = snapshot.rows[0];
-    const int64_t delaySeconds = static_cast<int64_t>(first.delay) * 60;
-    int64_t deadline = first.departureTimestamp;
-    if (delaySeconds > 0 && deadline > INT64_MAX - delaySeconds) {
-        deadline = INT64_MAX;
-    } else if (delaySeconds < 0 && deadline < INT64_MIN - delaySeconds) {
-        deadline = INT64_MIN;
-    } else {
-        deadline += delaySeconds;
-    }
-    return now >= deadline;
+    return now >= effectiveDepartureTimestamp(first.departureTimestamp, first.delay);
 }
 
+inline bool pruneConnectionsSnapshot(ConnectionsSnapshot& snapshot, int64_t now) {
+    size_t write = 0;
+    for (size_t read = 0; read < snapshot.count; read++) {
+        const Connection& row = snapshot.rows[read];
+        if (now >= effectiveDepartureTimestamp(row.departureTimestamp, row.delay)) {
+            continue;
+        }
+        if (write != read) snapshot.rows[write] = row;
+        write++;
+    }
+    const bool changed = write != snapshot.count;
+    snapshot.count = write;
+    return changed;
+}
 // Format an API duration ("00d00:48:00") as "48m"/"1h8m". Multi-day
 // durations fold days into hours ("01d02:30:00" -> "26h30m").
 // Unparseable input is returned unchanged.
@@ -104,6 +109,10 @@ inline bool parseConnections(Stream& input, ConnectionsSnapshot& output) {
         if (!products.is<JsonArray>() || products.as<JsonArray>().size() == 0) {
             continue; // walking-only entry; document itself stays valid
         }
+        const int64_t departureTimestamp = entry["from"]["departureTimestamp"].as<int64_t>();
+        if (departureTimestamp <= 0) {
+            continue;
+        }
         Connection& row = tmp.rows[tmp.count];
         String depIso = entry["from"]["departure"] | "";
         row.departure = (depIso.length() >= 16) ? depIso.substring(11, 16) : depIso;
@@ -114,7 +123,7 @@ inline bool parseConnections(Stream& input, ConnectionsSnapshot& output) {
         row.product = products.as<JsonArray>()[0] | "";
         row.transfers = entry["transfers"] | 0;
         row.delay = entry["from"]["delay"] | 0;
-        row.departureTimestamp = entry["from"]["departureTimestamp"].as<int64_t>();
+        row.departureTimestamp = departureTimestamp;
         tmp.count++;
     }
 
@@ -126,6 +135,7 @@ inline bool parseConnections(Stream& input, ConnectionsSnapshot& output) {
 void drawConnectionsHeader(const String& from, const String& to);
 void drawConnection(TFT_eSprite& sprite, const Connection& conn, int yPos);
 void displayConnections(const ConnectionsSnapshot& snapshot);
+void renderConnectionsCache();
 FetchResult fetchAndDrawConnections();
 void expireConnectionsIfExpired(int64_t now);
 

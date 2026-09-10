@@ -299,7 +299,7 @@ FetchResult drawBTC() {
     Serial.print("HTTPCODE: ");
     Serial.println(httpCode);
 
-    String bitcoin_price = "N/A";
+    static String bitcoin_price;
     FetchResult result = FetchResult::HttpError;
 
     if (isExpired(requestStarted, millis(), HTTP_TOTAL_TIMEOUT)) {
@@ -338,9 +338,7 @@ FetchResult drawBTC() {
                     String price;
                     bool priceOk = parseBtcPrice(payload, price);
                     result = btcVerdict(httpCode, priceOk);
-                    if (priceOk) {
-                        bitcoin_price = price;
-                    }
+                    if (priceOk) bitcoin_price = price;
                 }
             }
         }
@@ -349,6 +347,10 @@ FetchResult drawBTC() {
     }
     
     http.end();
+
+    if (bitcoin_price.length() == 0) {
+        return result;
+    }
 
     // Create temporary sprite for BTC price display
     TFT_eSprite btcSprite(&tft);

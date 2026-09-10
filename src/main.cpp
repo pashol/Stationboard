@@ -14,8 +14,15 @@
 
 namespace {
 RefreshResult refreshCurrentView() {
-    FetchResult transport = displayMode == 2 ? fetchAndDrawConnections() : drawStationboard();
     FetchResult btc = drawBTC();
+    FetchResult transport = FetchResult::HttpError;
+    if (displayMode == 2) {
+        transport = fetchAndDrawConnections();
+    } else if (stationboardRetryDue(stationboardRetry, millis())) {
+        beginStationboardAttempt(stationboardRetry, millis());
+        transport = drawStationboard(stationboardLimits(stationboardRetry));
+        recordStationboardResult(stationboardRetry, isTransportFreshResult(transport), millis());
+    }
     RefreshResult refresh{transport, btc, millis()};
 
     // BTC is optional: its result must not override the transport verdict.
@@ -99,6 +106,17 @@ void lightSleep() {
             button.tick();
         } else if (wakeAction == WakeAction::Timer) {
             Serial.println("Woken up by timer");
+            // Timer wake leaves the STA association stale on this hardware.
+            // Keep the STA interface enabled, then establish a new association
+            // before the next HTTPS refresh can start.
+            WiFi.disconnect(false, false);
+            delay(100);
+            WiFi.reconnect();
+            const unsigned long recoveryStarted = millis();
+            while (WiFi.status() != WL_CONNECTED &&
+                   !isExpired(recoveryStarted, millis(), 10000)) {
+                delay(50);
+            }
         } else if (wakeSource == WakeSource::WiFi) {
             Serial.println("Unexpected WiFi wake; WiFi wake is disabled");
         } else {
@@ -116,6 +134,9 @@ void serviceWiFiReconnect() {
     static ReconnectState reconnectState;
     const bool connected = WiFi.status() == WL_CONNECTED;
 
+    if (observeWiFiDisconnect(reconnectState, connected)) {
+        displayStatus(false);
+    }
     if (observeWiFiRecovery(reconnectState, connected)) {
         forceRefresh = true;
     }
@@ -149,6 +170,11 @@ bool updateClock() {
 
 void setup() {
     Serial.begin(115200);
+    WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+        if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+            Serial.printf("WiFi disconnected: reason=%d\n", info.wifi_sta_disconnected.reason);
+        }
+    });
 
     // Mount without formatting: a failed mount must never wipe the
     // filesystem at boot. Formatting happens only in the explicit
@@ -199,7 +225,7 @@ void setup() {
          
     // Initialize time client (UTC - DST conversion handled by Timezone library)
     timeClient.begin();
-    timeClient.setUpdateInterval(3600000); // Update every 60 minutes (3600000)
+    timeClient.setUpdateInterval(CLOCK_SYNC_INTERVAL);
     updateClock();
 
     // Keep the offline status rendered by setupWiFiManager until WiFi recovers.
@@ -210,6 +236,16 @@ void setup() {
         tft.setTextColor(TFT_WHITE, TFT_BLUE);
         drawCurrentTime();
         refreshCurrentView();
+    } else if (!portalRunning) {
+        tft.fillScreen(TFT_BLUE);
+        tft.fillRect(0, tft.height() - 25, tft.width(), 25, TFT_WHITE);
+        drawCurrentTime();
+        if (displayMode == 2) {
+            renderConnectionsCache();
+        } else {
+            renderStationboardCache();
+        }
+        displayStatus(false);
     }
 
     debugInfo();
@@ -227,7 +263,7 @@ void loop() {
     static unsigned long updateStartTime = 0;
     static bool isUpdating = false;
 
-    if (clockRetryDue(lastClockAttempt, currentMillis)) {
+    if (clockUpdateDue(clockValid, lastClockAttempt, currentMillis)) {
         updateClock();
     }
 
@@ -267,6 +303,9 @@ void loop() {
                 // Only update stationboard and BTC if not in night mode or during temporary wake
                 // AND if config portal is not running
                 if ((!nightMode.active || nightMode.temporaryWake || forceRefresh) && !portalRunning) {
+                    if (wasForced && displayMode != 2) {
+                        stationboardRetry = StationboardRetryState{};
+                    }
                     RefreshResult refresh = refreshCurrentView();
                     debugInfo();
                     Serial.println("============ End of refresh cycle ==================");
@@ -274,11 +313,11 @@ void loop() {
                         wasForced, isTransportFreshResult(refresh.transport));
                 }
 
-                updateStartTime = currentMillis;
+                    updateStartTime = millis();
                 isUpdating = true;
             } else {
                 displayStatus(false);
-                lastUpdate = currentMillis;
+                lastUpdate = updateStartTime;
                 updateStartTime = currentMillis;
                 isUpdating = true;
             }

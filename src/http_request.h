@@ -47,6 +47,19 @@ inline RequestLimits defaultLimits() {
     return RequestLimits{MAX_API_RESPONSE_BYTES, HTTP_TIMEOUT, HTTP_TOTAL_TIMEOUT};
 }
 
+inline RequestLimits stationboardLimits() {
+    return RequestLimits{MAX_API_RESPONSE_BYTES, STATIONBOARD_HTTP_TIMEOUT,
+                          STATIONBOARD_HTTP_TOTAL_TIMEOUT};
+}
+
+inline RequestLimits stationboardLimits(const StationboardRetryState& retry) {
+    if (retry.mode == StationboardRetryMode::LongRetry) {
+        return RequestLimits{MAX_API_RESPONSE_BYTES, STATIONBOARD_LONG_HTTP_TIMEOUT,
+                             STATIONBOARD_LONG_HTTP_TOTAL_TIMEOUT};
+    }
+    return stationboardLimits();
+}
+
 // Rollover-safe deadline predicate: unsigned subtraction stays correct
 // across the millis() wrap every ~49.7 days.
 inline bool isExpired(unsigned long start, unsigned long now, unsigned long limit) {

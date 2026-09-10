@@ -17,6 +17,7 @@ struct Transport {
     String departure;
     String delay;
     String category;
+    int64_t departureTimestamp = 0;
 };
 
 // Bounded stationboard snapshot (Task 5). Header-inline (URLEncode
@@ -29,10 +30,29 @@ struct StationboardSnapshot {
     unsigned long receivedAt = 0;
 };
 
-// Unsigned subtraction remains correct when millis() rolls over.
-inline bool isSnapshotFresh(unsigned long receivedAt, unsigned long now,
-                            unsigned long maxAgeMs) {
-    return (now - receivedAt) < maxAgeMs;
+inline size_t stationboardRequestLimit(int displayLimit) {
+    return min(static_cast<size_t>(max(displayLimit, 1)) + STATIONBOARD_CACHE_RESERVE,
+               MAX_TRANSPORTS);
+}
+
+inline size_t stationboardVisibleCount(const StationboardSnapshot& snapshot, int displayLimit) {
+    return min(snapshot.count, static_cast<size_t>(max(displayLimit, 1)));
+}
+
+inline bool pruneStationboardSnapshot(StationboardSnapshot& snapshot, int64_t now) {
+    size_t write = 0;
+    for (size_t read = 0; read < snapshot.count; read++) {
+        const Transport& row = snapshot.rows[read];
+        if (row.departureTimestamp > 0 &&
+            now >= effectiveDepartureTimestamp(row.departureTimestamp, row.delay.toInt())) {
+            continue;
+        }
+        if (write != read) snapshot.rows[write] = row;
+        write++;
+    }
+    const bool changed = write != snapshot.count;
+    snapshot.count = write;
+    return changed;
 }
 
 struct RefreshResult {
@@ -45,6 +65,8 @@ inline bool isTransportFreshResult(FetchResult transport) {
     return transport == FetchResult::Success;
 }
 
+FetchResult drawStationboard(const RequestLimits& limits);
+
 inline String buildStationboardUrl(const String& stationId, int limit,
                                    const String& datetime) {
     return "https://transport.opendata.ch/v1/stationboard?id=" +
@@ -53,6 +75,7 @@ inline String buildStationboardUrl(const String& stationId, int limit,
            "&fields[]=station/name&fields[]=stationboard/name"
            "&fields[]=stationboard/category&fields[]=stationboard/number"
            "&fields[]=stationboard/to&fields[]=stationboard/stop/departure"
+           "&fields[]=stationboard/stop/departureTimestamp"
            "&fields[]=stationboard/stop/delay";
 }
 
@@ -74,6 +97,7 @@ inline bool parseStationboard(Stream& input, StationboardSnapshot& output) {
     filter["stationboard"][0]["number"] = true;
     filter["stationboard"][0]["to"] = true;
     filter["stationboard"][0]["stop"]["departure"] = true;
+    filter["stationboard"][0]["stop"]["departureTimestamp"] = true;
     filter["stationboard"][0]["stop"]["delay"] = true;
 
     DynamicJsonDocument doc(STATIONBOARD_JSON_CAPACITY);
@@ -96,6 +120,7 @@ inline bool parseStationboard(Stream& input, StationboardSnapshot& output) {
         }
         const char* to = entry["to"] | "";
         const char* departureIso = entry["stop"]["departure"] | "";
+        const int64_t departureTimestamp = entry["stop"]["departureTimestamp"].as<int64_t>();
         if (to[0] == '\0' || departureIso[0] == '\0') {
             continue; // skip invalid rows; document itself stays valid
         }
@@ -114,6 +139,7 @@ inline bool parseStationboard(Stream& input, StationboardSnapshot& output) {
             }
         }
         row.destination = String(to);
+        row.departureTimestamp = departureTimestamp;
         String iso = String(departureIso);
         row.departure = (iso.length() >= 16) ? iso.substring(11, 16) : iso;
         if (entry["stop"]["delay"].isNull()) {
@@ -132,6 +158,7 @@ inline bool parseStationboard(Stream& input, StationboardSnapshot& output) {
 void drawTransport(TFT_eSprite& sprite, const Transport& transport, int yPos);
 void displayTransports(const StationboardSnapshot& snapshot);
 void drawStation(const String& station);
+void renderStationboardCache();
 FetchResult drawStationboard();
 void expireStationboardIfStale(unsigned long now);
 

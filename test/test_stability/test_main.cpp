@@ -27,7 +27,7 @@ const unsigned long HTTP_TIMEOUT = 10000;
 WiFiManager wm;
 
 void test_operational_limits_are_bounded() {
-    TEST_ASSERT_EQUAL_UINT32(10, MAX_TRANSPORTS);
+    TEST_ASSERT_EQUAL_UINT32(15, MAX_TRANSPORTS);
     TEST_ASSERT_EQUAL_UINT32(8, MAX_CONNECTIONS);
     TEST_ASSERT_EQUAL_UINT32(65536, MAX_API_RESPONSE_BYTES);
     TEST_ASSERT_EQUAL_UINT32(8192, STATIONBOARD_JSON_CAPACITY);
@@ -48,8 +48,21 @@ void test_stationboard_url_requests_only_parsed_fields() {
         "https://transport.opendata.ch/v1/stationboard?id=Z%C3%BCrich%20HB&limit=10&datetime=2026-09-08%2012%3A34"
         "&fields[]=station/name&fields[]=stationboard/name&fields[]=stationboard/category"
         "&fields[]=stationboard/number&fields[]=stationboard/to&fields[]=stationboard/stop/departure"
-        "&fields[]=stationboard/stop/delay",
+        "&fields[]=stationboard/stop/departureTimestamp&fields[]=stationboard/stop/delay",
         url.c_str());
+}
+
+void test_stationboard_request_limit_includes_five_cached_rows() {
+    TEST_ASSERT_EQUAL_UINT(6, stationboardRequestLimit(1));
+    TEST_ASSERT_EQUAL_UINT(13, stationboardRequestLimit(8));
+    TEST_ASSERT_EQUAL_UINT(15, stationboardRequestLimit(10));
+}
+
+void test_stationboard_visible_rows_exclude_cached_reserve() {
+    StationboardSnapshot snapshot;
+    snapshot.count = 13;
+    TEST_ASSERT_EQUAL_UINT(8, stationboardVisibleCount(snapshot, 8));
+    TEST_ASSERT_EQUAL_UINT(10, stationboardVisibleCount(snapshot, 10));
 }
 
 void test_config_rejects_empty_stations() {
@@ -122,10 +135,18 @@ void test_refresh_attempt_interval_handles_failed_attempts_and_rollover() {
     TEST_ASSERT_TRUE(shouldAttemptRefresh(ULONG_MAX - 500, 499, 1000));
 }
 
-void test_failed_forced_refresh_is_retried() {
-    TEST_ASSERT_TRUE(shouldRetryForcedRefresh(true, false));
+void test_failed_forced_refresh_uses_normal_interval() {
+    TEST_ASSERT_FALSE(shouldRetryForcedRefresh(true, false));
     TEST_ASSERT_FALSE(shouldRetryForcedRefresh(true, true));
     TEST_ASSERT_FALSE(shouldRetryForcedRefresh(false, false));
+}
+
+void test_wifi_disconnect_transition_is_observable() {
+    ReconnectState state;
+    observeWiFiRecovery(state, true);
+    TEST_ASSERT_TRUE(observeWiFiDisconnect(state, false));
+    observeWiFiRecovery(state, false);
+    TEST_ASSERT_FALSE(observeWiFiDisconnect(state, false));
 }
 
 // --- Task 10: clock validity and fail-safe night scheduling ---
@@ -202,6 +223,13 @@ void test_clock_retry_interval_handles_millis_rollover() {
     TEST_ASSERT_TRUE(clockRetryDue(ULONG_MAX - 30000, 29999));
 }
 
+void test_valid_clock_syncs_hourly_while_invalid_clock_retries_each_minute() {
+    TEST_ASSERT_FALSE(clockUpdateDue(true, 1000, 1000 + CLOCK_SYNC_INTERVAL - 1));
+    TEST_ASSERT_TRUE(clockUpdateDue(true, 1000, 1000 + CLOCK_SYNC_INTERVAL));
+    TEST_ASSERT_FALSE(clockUpdateDue(false, 1000, 1000 + CLOCK_RETRY_INTERVAL - 1));
+    TEST_ASSERT_TRUE(clockUpdateDue(false, 1000, 1000 + CLOCK_RETRY_INTERVAL));
+}
+
 void test_temporary_wake_expiry_handles_millis_rollover() {
     const unsigned long duration = 30000;
     TEST_ASSERT_FALSE(temporaryWakeExpired(1000, 1000 + duration - 1, duration));
@@ -219,6 +247,12 @@ void test_wake_policy_ignores_wifi_and_unknown_wakes() {
                       static_cast<int>(wakeActionFor(WakeSource::WiFi)));
     TEST_ASSERT_EQUAL(static_cast<int>(WakeAction::Ignore),
                       static_cast<int>(wakeActionFor(WakeSource::Other)));
+}
+
+void test_timer_wake_requires_wifi_recovery_before_https() {
+    TEST_ASSERT_TRUE(shouldRecoverWiFiAfterWake(WakeAction::Timer));
+    TEST_ASSERT_FALSE(shouldRecoverWiFiAfterWake(WakeAction::Button));
+    TEST_ASSERT_FALSE(shouldRecoverWiFiAfterWake(WakeAction::Ignore));
 }
 
 void setUp(void) {}
@@ -422,10 +456,10 @@ static const char* SB_VALID_JSON =
     "{\"station\":{\"name\":\"Bern\"},\"stationboard\":["
     "{\"name\":\"IC 1\",\"category\":\"IC\",\"number\":\"1\","
     "\"to\":\"Zurich HB\","
-    "\"stop\":{\"departure\":\"2026-09-07T12:34:00+0200\",\"delay\":null}},"
+    "\"stop\":{\"departure\":\"2026-09-07T12:34:00+0200\",\"departureTimestamp\":1788777240,\"delay\":null}},"
     "{\"name\":\"S 2\",\"category\":\"S\",\"number\":\"2\","
     "\"to\":\"Thun\","
-    "\"stop\":{\"departure\":\"2026-09-07T12:41:00+0200\",\"delay\":\"3\"}}"
+    "\"stop\":{\"departure\":\"2026-09-07T12:41:00+0200\",\"departureTimestamp\":1788777660,\"delay\":\"3\"}}"
     "]}";
 
 void test_sb_valid_doc_parses() {
@@ -436,18 +470,69 @@ void test_sb_valid_doc_parses() {
     TEST_ASSERT_EQUAL_UINT(2, snap.count);
     TEST_ASSERT_EQUAL_STRING("Zurich HB", snap.rows[0].destination.c_str());
     TEST_ASSERT_EQUAL_STRING("12:34", snap.rows[0].departure.c_str());
+    TEST_ASSERT_EQUAL_INT64(1788777240, snap.rows[0].departureTimestamp);
     TEST_ASSERT_EQUAL_STRING("IC", snap.rows[0].category.c_str());
     TEST_ASSERT_EQUAL_STRING("1", snap.rows[0].number.c_str());
     TEST_ASSERT_EQUAL_STRING("Thun", snap.rows[1].destination.c_str());
     TEST_ASSERT_EQUAL_STRING("12:41", snap.rows[1].departure.c_str());
     TEST_ASSERT_EQUAL_STRING("3", snap.rows[1].delay.c_str());
+    TEST_ASSERT_EQUAL_INT64(1788777660, snap.rows[1].departureTimestamp);
     TEST_ASSERT_TRUE_MESSAGE(snap.receivedAt >= before, "receivedAt must be stamped on success");
+}
+
+void test_wifi_reconnect_backoff_caps_at_one_minute() {
+    ReconnectState state;
+    for (int i = 0; i < 20; i++) {
+        recordReconnectFailure(state, 1000);
+    }
+    TEST_ASSERT_EQUAL_UINT32(60000, state.backoffMs);
+}
+
+void test_stationboard_pruning_promotes_cached_reserve_rows() {
+    StationboardSnapshot snapshot;
+    snapshot.count = 3;
+    snapshot.rows[0].destination = "Departed";
+    snapshot.rows[0].departureTimestamp = 1000;
+    snapshot.rows[1].destination = "Visible";
+    snapshot.rows[1].departureTimestamp = 1060;
+    snapshot.rows[1].delay = "2";
+    snapshot.rows[2].destination = "Reserve";
+    snapshot.rows[2].departureTimestamp = 1200;
+
+    TEST_ASSERT_TRUE(pruneStationboardSnapshot(snapshot, 1120));
+    TEST_ASSERT_EQUAL_UINT(2, snapshot.count);
+    TEST_ASSERT_EQUAL_STRING("Visible", snapshot.rows[0].destination.c_str());
+    TEST_ASSERT_EQUAL_STRING("Reserve", snapshot.rows[1].destination.c_str());
+}
+
+void test_stationboard_pruning_uses_effective_departure_time() {
+    StationboardSnapshot snapshot;
+    snapshot.count = 1;
+    snapshot.rows[0].departureTimestamp = 1000;
+    snapshot.rows[0].delay = "2";
+
+    TEST_ASSERT_FALSE(pruneStationboardSnapshot(snapshot, 1119));
+    TEST_ASSERT_TRUE(pruneStationboardSnapshot(snapshot, 1120));
+    TEST_ASSERT_EQUAL_UINT(0, snapshot.count);
+}
+
+void test_connections_pruning_removes_only_departed_rows() {
+    ConnectionsSnapshot snapshot;
+    snapshot.count = 2;
+    snapshot.rows[0].product = "IC 1";
+    snapshot.rows[0].departureTimestamp = 1000;
+    snapshot.rows[1].product = "S 2";
+    snapshot.rows[1].departureTimestamp = 1060;
+
+    TEST_ASSERT_TRUE(pruneConnectionsSnapshot(snapshot, 1000));
+    TEST_ASSERT_EQUAL_UINT(1, snapshot.count);
+    TEST_ASSERT_EQUAL_STRING("S 2", snapshot.rows[0].product.c_str());
 }
 
 static const char* SB_REORDERED_JSON =
     "{\"stationboard\":["
     "{\"to\":\"Thun\","
-    "\"stop\":{\"delay\":\"3\",\"departure\":\"2026-09-07T12:41:00+0200\"},"
+    "\"stop\":{\"delay\":\"3\",\"departureTimestamp\":1788777660,\"departure\":\"2026-09-07T12:41:00+0200\"},"
     "\"number\":\"2\",\"category\":\"S\",\"name\":\"S 2\"}"
     "],\"station\":{\"name\":\"Bern\"}}";
 
@@ -504,25 +589,25 @@ static String buildManyEntriesJson(int n) {
         s += String(i);
         s += "\",\"to\":\"Dest";
         s += String(i);
-        s += "\",\"stop\":{\"departure\":\"2026-09-07T12:34:00+0200\",\"delay\":null}}";
+        s += "\",\"stop\":{\"departure\":\"2026-09-07T12:34:00+0200\",\"departureTimestamp\":1788777240,\"delay\":null}}";
     }
     s += "]}";
     return s;
 }
 
-void test_sb_more_than_ten_entries_capped() {
+void test_sb_more_than_fifteen_entries_capped() {
     StationboardSnapshot snap;
-    TEST_ASSERT_TRUE_MESSAGE(parseFromString(buildManyEntriesJson(12), snap), "12-entry doc must parse");
+    TEST_ASSERT_TRUE_MESSAGE(parseFromString(buildManyEntriesJson(17), snap), "17-entry doc must parse");
     TEST_ASSERT_EQUAL_UINT(MAX_TRANSPORTS, snap.count);
     TEST_ASSERT_EQUAL_STRING("Dest0", snap.rows[0].destination.c_str());
-    TEST_ASSERT_EQUAL_STRING("Dest9", snap.rows[9].destination.c_str());
+    TEST_ASSERT_EQUAL_STRING("Dest14", snap.rows[14].destination.c_str());
 }
 
 static const char* SB_UNICODE_JSON =
     "{\"station\":{\"name\":\"Z\\u00fcrich HB\"},\"stationboard\":["
     "{\"name\":\"S 1\",\"category\":\"S\",\"number\":\"1\","
     "\"to\":\"Z\\u00fcrich HB\","
-    "\"stop\":{\"departure\":\"2026-09-07T12:34:00+0200\",\"delay\":null}}"
+    "\"stop\":{\"departure\":\"2026-09-07T12:34:00+0200\",\"departureTimestamp\":1788777240,\"delay\":null}}"
     "]}";
 
 void test_sb_unicode_escapes_decoded() {
@@ -544,7 +629,7 @@ static String buildLargePassListJson() {
         s += String(i);
         s += "WithExtraTextToGrowThePayload\"},\"departure\":\"2026-09-07T12:34:00+0200\"}";
     }
-    s += "],\"stop\":{\"departure\":\"2026-09-07T12:34:00+0200\",\"delay\":null}}]}";
+    s += "],\"stop\":{\"departure\":\"2026-09-07T12:34:00+0200\",\"departureTimestamp\":1788777240,\"delay\":null}}]}";
     return s;
 }
 
@@ -572,7 +657,7 @@ static String buildOver32KiBPassListJson() {
         s += padding;
         s += "\"},\"departure\":\"2026-09-07T12:34:00+0200\"}";
     }
-    s += "],\"stop\":{\"departure\":\"2026-09-07T12:34:00+0200\",\"delay\":null}}]}";
+    s += "],\"stop\":{\"departure\":\"2026-09-07T12:34:00+0200\",\"departureTimestamp\":1788777240,\"delay\":null}}]}";
     return s;
 }
 
@@ -712,6 +797,20 @@ void test_conn_empty_products_skipped() {
     TEST_ASSERT_EQUAL_STRING("S 2", snap.rows[1].product.c_str());
 }
 
+void test_conn_missing_departure_timestamp_is_skipped() {
+    const String json =
+        "{\"connections\":["
+        "{\"from\":{\"departure\":\"2026-09-07T08:14:00+0200\",\"delay\":0},"
+        "\"to\":{\"arrival\":\"2026-09-07T09:02:00+0200\"},"
+        "\"duration\":\"00d00:48:00\",\"transfers\":0,\"products\":[\"IC 1\"]}"
+        "]}";
+    ConnectionsSnapshot snapshot;
+    StringStream stream(json);
+
+    TEST_ASSERT_TRUE(parseConnections(stream, snapshot));
+    TEST_ASSERT_EQUAL_UINT(0, snapshot.count);
+}
+
 static const char* CONN_NESTED_JSON =
     "{\"connections\":["
     "{\"from\":{\"departure\":\"2026-09-07T08:14:00+0200\",\"departureTimestamp\":1786073640,\"delay\":0,"
@@ -795,6 +894,71 @@ void test_request_limits_defaults() {
                                      "total must equal HTTP_TOTAL_TIMEOUT");
     TEST_ASSERT_EQUAL_UINT32_MESSAGE(30000, HTTP_TOTAL_TIMEOUT,
                                      "total timeout must be 30000ms");
+}
+
+void test_stationboard_request_limits_allow_slow_filtered_response() {
+    RequestLimits limits = stationboardLimits();
+    TEST_ASSERT_EQUAL_UINT32(15000, limits.inactivityMs);
+    TEST_ASSERT_EQUAL_UINT32(20000, limits.totalMs);
+}
+
+void test_stationboard_retry_promotes_a_normal_failure_to_a_long_retry() {
+    StationboardRetryState state;
+
+    recordStationboardResult(state, false, 1000);
+
+    TEST_ASSERT_EQUAL(static_cast<int>(StationboardRetryMode::LongRetry),
+                      static_cast<int>(state.mode));
+    TEST_ASSERT_EQUAL_UINT32(61000, state.nextAttemptAt);
+    TEST_ASSERT_FALSE(stationboardRetryDue(state, 60999));
+    TEST_ASSERT_TRUE(stationboardRetryDue(state, 61000));
+}
+
+void test_stationboard_retry_promotes_a_long_failure_to_cooldown() {
+    StationboardRetryState state;
+    recordStationboardResult(state, false, 1000);
+
+    recordStationboardResult(state, false, 61000);
+
+    TEST_ASSERT_EQUAL(static_cast<int>(StationboardRetryMode::Cooldown),
+                      static_cast<int>(state.mode));
+    TEST_ASSERT_EQUAL_UINT32(361000, state.nextAttemptAt);
+    TEST_ASSERT_FALSE(stationboardRetryDue(state, 360999));
+    TEST_ASSERT_TRUE(stationboardRetryDue(state, 361000));
+}
+
+void test_stationboard_retry_success_resets_to_normal() {
+    StationboardRetryState state;
+    recordStationboardResult(state, false, 1000);
+    recordStationboardResult(state, true, 61000);
+
+    TEST_ASSERT_EQUAL(static_cast<int>(StationboardRetryMode::Normal),
+                      static_cast<int>(state.mode));
+    TEST_ASSERT_EQUAL_UINT32(0, state.nextAttemptAt);
+    TEST_ASSERT_TRUE(stationboardRetryDue(state, 61000));
+}
+
+void test_stationboard_retry_uses_long_limits_only_after_a_failure() {
+    StationboardRetryState state;
+    TEST_ASSERT_EQUAL_UINT32(15000, stationboardLimits(state).inactivityMs);
+    TEST_ASSERT_EQUAL_UINT32(20000, stationboardLimits(state).totalMs);
+
+    recordStationboardResult(state, false, 1000);
+
+    TEST_ASSERT_EQUAL_UINT32(60000, stationboardLimits(state).inactivityMs);
+    TEST_ASSERT_EQUAL_UINT32(90000, stationboardLimits(state).totalMs);
+}
+
+void test_stationboard_retry_returns_to_normal_after_cooldown() {
+    StationboardRetryState state;
+    recordStationboardResult(state, false, 1000);
+    recordStationboardResult(state, false, 61000);
+
+    beginStationboardAttempt(state, 361000);
+
+    TEST_ASSERT_EQUAL(static_cast<int>(StationboardRetryMode::Normal),
+                      static_cast<int>(state.mode));
+    TEST_ASSERT_EQUAL_UINT32(15000, stationboardLimits(state).inactivityMs);
 }
 
 void test_bounded_stream_stops_at_max_bytes() {
@@ -1045,16 +1209,7 @@ void test_btc_price_parse_invalid() {
     TEST_ASSERT_EQUAL_STRING_MESSAGE("KEEP", out.c_str(), "output must be untouched on failure");
 }
 
-// --- Task 8: snapshot freshness and aggregate refresh status ---
-
-void test_stationboard_snapshot_freshness_handles_millis_rollover() {
-    const unsigned long receivedAt = 0xFFFFFFF0UL;
-    const unsigned long now = 0x00000005UL;
-    TEST_ASSERT_TRUE_MESSAGE(isSnapshotFresh(receivedAt, now, 22),
-                             "21ms across rollover must remain fresh before the age limit");
-    TEST_ASSERT_FALSE_MESSAGE(isSnapshotFresh(receivedAt, now, 21),
-                              "the age limit itself must mark a snapshot stale");
-}
+// --- Task 8: aggregate refresh status ---
 
 void test_connections_snapshot_expires_at_first_effective_departure() {
     ConnectionsSnapshot snapshot;
@@ -1168,6 +1323,8 @@ void setup() {
     RUN_TEST(test_button_click_window_allows_reliable_multi_clicks);
     RUN_TEST(test_url_encode_handles_utf8_bytes);
     RUN_TEST(test_stationboard_url_requests_only_parsed_fields);
+    RUN_TEST(test_stationboard_request_limit_includes_five_cached_rows);
+    RUN_TEST(test_stationboard_visible_rows_exclude_cached_reserve);
     RUN_TEST(test_config_rejects_empty_stations);
     RUN_TEST(test_config_clamps_numeric_ranges);
     RUN_TEST(test_equal_night_times_disable_schedule);
@@ -1175,7 +1332,8 @@ void setup() {
     RUN_TEST(test_reconnect_observer_resets_scheduler_on_recovery);
     RUN_TEST(test_offline_reconnect_is_rate_limited);
     RUN_TEST(test_refresh_attempt_interval_handles_failed_attempts_and_rollover);
-    RUN_TEST(test_failed_forced_refresh_is_retried);
+    RUN_TEST(test_failed_forced_refresh_uses_normal_interval);
+    RUN_TEST(test_wifi_disconnect_transition_is_observable);
     RUN_TEST(test_plausible_epoch_requires_2024_or_later);
     RUN_TEST(test_failed_clock_sync_keeps_an_invalid_clock_invalid);
     RUN_TEST(test_epoch_timeval_conversion_has_zero_microseconds);
@@ -1184,14 +1342,18 @@ void setup() {
     RUN_TEST(test_night_schedule_uses_local_time_across_dst_boundaries);
     RUN_TEST(test_weekend_disablement_overrides_an_active_night_schedule);
     RUN_TEST(test_clock_retry_interval_handles_millis_rollover);
+    RUN_TEST(test_valid_clock_syncs_hourly_while_invalid_clock_retries_each_minute);
     RUN_TEST(test_temporary_wake_expiry_handles_millis_rollover);
     RUN_TEST(test_wake_policy_ignores_wifi_and_unknown_wakes);
+    RUN_TEST(test_timer_wake_requires_wifi_recovery_before_https);
     RUN_TEST(test_portal_parameters_have_program_lifetime);
     RUN_TEST(test_sb_valid_doc_parses);
+    RUN_TEST(test_stationboard_pruning_promotes_cached_reserve_rows);
+    RUN_TEST(test_stationboard_pruning_uses_effective_departure_time);
     RUN_TEST(test_sb_reordered_members_parse);
     RUN_TEST(test_sb_nested_unrelated_keys_ignored);
     RUN_TEST(test_sb_truncated_fails_and_preserves_output);
-    RUN_TEST(test_sb_more_than_ten_entries_capped);
+    RUN_TEST(test_sb_more_than_fifteen_entries_capped);
     RUN_TEST(test_sb_unicode_escapes_decoded);
     RUN_TEST(test_sb_large_ignored_passlist_succeeds);
     RUN_TEST(test_sb_over_32kib_ignored_passlist_requires_new_stream_cap);
@@ -1200,11 +1362,18 @@ void setup() {
     RUN_TEST(test_conn_reordered_members_parse);
     RUN_TEST(test_conn_truncated_fails_and_preserves_output);
     RUN_TEST(test_conn_empty_products_skipped);
+    RUN_TEST(test_conn_missing_departure_timestamp_is_skipped);
     RUN_TEST(test_conn_nested_journeys_ignored);
     RUN_TEST(test_conn_more_than_eight_capped);
     RUN_TEST(test_conn_multiday_duration);
     RUN_TEST(test_conn_walking_only_returns_empty_success);
     RUN_TEST(test_request_limits_defaults);
+    RUN_TEST(test_stationboard_request_limits_allow_slow_filtered_response);
+    RUN_TEST(test_stationboard_retry_promotes_a_normal_failure_to_a_long_retry);
+    RUN_TEST(test_stationboard_retry_promotes_a_long_failure_to_cooldown);
+    RUN_TEST(test_stationboard_retry_success_resets_to_normal);
+    RUN_TEST(test_stationboard_retry_uses_long_limits_only_after_a_failure);
+    RUN_TEST(test_stationboard_retry_returns_to_normal_after_cooldown);
     RUN_TEST(test_bounded_stream_stops_at_max_bytes);
     RUN_TEST(test_bounded_stream_readbytes_stops_at_max_bytes);
     RUN_TEST(test_bounded_stream_readbytes_waits_through_packet_gap);
@@ -1220,10 +1389,10 @@ void setup() {
     RUN_TEST(test_btc_verdict);
     RUN_TEST(test_btc_price_parse_valid);
     RUN_TEST(test_btc_price_parse_invalid);
-    RUN_TEST(test_stationboard_snapshot_freshness_handles_millis_rollover);
     RUN_TEST(test_connections_snapshot_expires_at_first_effective_departure);
     RUN_TEST(test_connections_snapshot_expiry_saturates_64_bit_deadline);
     RUN_TEST(test_empty_connections_snapshot_is_not_expired);
+    RUN_TEST(test_connections_pruning_removes_only_departed_rows);
     RUN_TEST(test_transport_status_ignores_optional_btc_result);
     RUN_TEST(test_partial_transport_result_is_not_fresh);
     RUN_TEST(test_ota_starts_only_with_credentials_and_without_portal);
@@ -1234,6 +1403,7 @@ void setup() {
     RUN_TEST(test_ota_upload_stalls_time_out_from_last_progress);
     RUN_TEST(test_ota_wifi_loss_forces_recovery);
     RUN_TEST(test_ota_upload_survives_night_mode_boundary);
+    RUN_TEST(test_wifi_reconnect_backoff_caps_at_one_minute);
     bool spiffsReady = SPIFFS.begin(false);
     if (!spiffsReady) { spiffsReady = SPIFFS.begin(true); }
     if (!spiffsReady) {

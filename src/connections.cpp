@@ -17,18 +17,13 @@ bool hasCurrentSnapshot = false;
 }
 
 void expireConnectionsIfExpired(int64_t now) {
-    if (displayMode != 2 || !hasCurrentSnapshot ||
-        !connectionsSnapshotExpired(currentSnapshot, now)) {
+    if (displayMode != 2 || !hasCurrentSnapshot || !clockValid ||
+        !pruneConnectionsSnapshot(currentSnapshot, now)) {
         return;
     }
 
-    hasCurrentSnapshot = false;
-    tft.loadFont(AA_FONT_SMALL);
-    tft.setTextColor(TFT_BLACK, TFT_WHITE);
-    tft.fillRect(0, 0, tft.width(), 25, TFT_WHITE);
-    tft.drawString("STALE DATA", POS_BUS, 7);
-    // Directly clear departure rows so low heap cannot retain stale entries.
-    tft.fillRect(0, POS_FIRST, tft.width(), 10 * POS_INC, TFT_BLUE);
+    drawConnectionsHeader(config.stationId, config.stationId2);
+    displayConnections(currentSnapshot);
 }
 
 // ── Display functions ────────────────────────────────────────────────────────
@@ -40,6 +35,15 @@ void drawConnectionsHeader(const String& from, const String& to) {
     String label = from + " - " + to;
     if (label.length() > 30) label = label.substring(0, 27) + "...";
     tft.drawString(label, POS_BUS, 7);
+}
+
+void renderConnectionsCache() {
+    drawConnectionsHeader(config.stationId, config.stationId2);
+    if (hasCurrentSnapshot) {
+        displayConnections(currentSnapshot);
+    } else {
+        tft.fillRect(0, POS_FIRST, tft.width(), 10 * POS_INC, TFT_BLUE);
+    }
 }
 
 void drawConnection(TFT_eSprite& sprite, const Connection& conn, int yPos) {
